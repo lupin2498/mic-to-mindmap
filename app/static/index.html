@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mic to Mindmap</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎙️</span>
+      <div>
+        <h1>Mic to Mindmap</h1>
+        <p>Ghi âm cuộc họp → tóm tắt ý chính → mind map, bằng AI chạy local</p>
+      </div>
+    </div>
+    <div class="ai-status" id="ai-status" title="Trạng thái các thành phần AI local">
+      <span class="badge" id="badge-whisper">Whisper: …</span>
+      <span class="badge" id="badge-ollama">LLM: …</span>
+      <span class="badge" id="badge-memory">Trí nhớ: …</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="sidebar">
+      <button class="btn primary block" id="btn-new-meeting">＋ Cuộc họp mới</button>
+      <input type="search" id="search-meetings" placeholder="Tìm cuộc họp…" autocomplete="off">
+      <ul class="meeting-list" id="meeting-list"></ul>
+    </aside>
+
+    <main class="content">
+      <nav class="tabs">
+        <button class="tab active" data-tab="record">🎙 Ghi âm</button>
+        <button class="tab" data-tab="result">📝 Kết quả</button>
+        <button class="tab" data-tab="learning">🧠 Học hỏi</button>
+      </nav>
+
+      <!-- ============================ GHI ÂM ============================ -->
+      <section class="panel active" id="tab-record">
+        <div class="card">
+          <h2>Thông tin cuộc họp</h2>
+          <div class="grid-2">
+            <label>Tiêu đề
+              <input type="text" id="meeting-title" placeholder="VD: Họp kế hoạch quý 4">
+            </label>
+            <label>Ngôn ngữ
+              <select id="meeting-language">
+                <option value="vi">Tiếng Việt</option>
+                <option value="en">English</option>
+                <option value="">Tự nhận dạng</option>
+              </select>
+            </label>
+          </div>
+          <label>Người tham gia (phân cách bằng dấu phẩy)
+            <input type="text" id="meeting-participants" placeholder="VD: An, Bình, Chi">
+          </label>
+        </div>
+
+        <div class="card recorder">
+          <h2>Ghi âm</h2>
+          <div class="recorder-main">
+            <button class="rec-button" id="btn-record" title="Bắt đầu ghi âm">
+              <span class="rec-dot"></span>
+            </button>
+            <div class="rec-info">
+              <div class="rec-timer" id="rec-timer">00:00</div>
+              <div class="rec-state" id="rec-state">Sẵn sàng. Nhấn nút đỏ để bắt đầu.</div>
+              <div class="rec-controls">
+                <button class="btn" id="btn-pause" disabled>⏸ Tạm dừng</button>
+                <button class="btn danger" id="btn-stop" disabled>⏹ Dừng</button>
+              </div>
+            </div>
+            <canvas id="level-meter" width="320" height="64"></canvas>
+          </div>
+
+          <label class="checkbox">
+            <input type="checkbox" id="live-captions">
+            Phụ đề trực tiếp bằng nhận dạng của trình duyệt
+            <small>(tùy chọn; Chrome/Edge gửi âm thanh tới dịch vụ của trình duyệt, không phải local. Dùng làm dự phòng khi chưa cài Whisper.)</small>
+          </label>
+          <div class="live-transcript" id="live-transcript" hidden></div>
+
+          <div class="divider"><span>hoặc</span></div>
+          <label class="file-input">
+            📁 Chọn file ghi âm có sẵn (webm, mp3, m4a, wav…)
+            <input type="file" id="audio-file" accept="audio/*,video/webm,video/mp4">
+          </label>
+
+          <div class="preview" id="preview" hidden>
+            <audio controls id="audio-preview"></audio>
+            <div class="preview-actions">
+              <span id="preview-info"></span>
+              <button class="btn primary" id="btn-process">✨ Xử lý bằng AI</button>
+              <button class="btn" id="btn-discard">Bỏ bản ghi</button>
+            </div>
+          </div>
+          <div class="progress" id="progress" hidden>
+            <div class="spinner"></div>
+            <span id="progress-text">Đang xử lý…</span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Hoặc nhập transcript thủ công</h2>
+          <p class="muted">Dán biên bản/transcript có sẵn để tóm tắt và vẽ mind map ngay.</p>
+          <textarea id="manual-transcript" rows="5" placeholder="Dán nội dung cuộc họp vào đây…"></textarea>
+          <button class="btn primary" id="btn-analyze-text">✨ Tóm tắt văn bản này</button>
+        </div>
+      </section>
+
+      <!-- ============================ KẾT QUẢ ============================ -->
+      <section class="panel" id="tab-result">
+        <div class="empty" id="result-empty">Chưa chọn cuộc họp nào. Hãy ghi âm hoặc chọn một cuộc họp ở bên trái.</div>
+        <div id="result-body" hidden>
+          <div class="card result-header">
+            <div>
+              <input type="text" class="title-input" id="result-title" title="Nhấp để đổi tiêu đề">
+              <div class="meta" id="result-meta"></div>
+            </div>
+            <div class="header-actions">
+              <button class="btn" id="btn-reanalyze">🔄 Phân tích lại</button>
+              <a class="btn" id="btn-export-md" href="#" download>⬇ Markdown</a>
+              <button class="btn danger" id="btn-delete">🗑 Xóa</button>
+            </div>
+          </div>
+          <div class="status-line" id="result-status" hidden></div>
+
+          <div class="result-grid">
+            <div class="card">
+              <h2>Ý chính <small class="muted">(mỗi dòng một ý, có thể sửa)</small></h2>
+              <textarea id="edit-summary" rows="7"></textarea>
+              <h3>Quyết định</h3>
+              <textarea id="edit-decisions" rows="3"></textarea>
+              <h3>Việc cần làm</h3>
+              <table class="actions-table" id="actions-table">
+                <thead><tr><th>Việc</th><th>Phụ trách</th><th>Hạn</th><th></th></tr></thead>
+                <tbody></tbody>
+              </table>
+              <button class="btn small" id="btn-add-action">＋ Thêm việc</button>
+              <h3>Từ khóa</h3>
+              <input type="text" id="edit-keywords" placeholder="phân cách bằng dấu phẩy">
+              <div class="row-actions">
+                <button class="btn primary" id="btn-save-analysis">💾 Lưu chỉnh sửa (AI sẽ học theo)</button>
+                <span class="muted" id="save-analysis-msg"></span>
+              </div>
+              <div class="rating">
+                <span>Đánh giá kết quả:</span>
+                <div class="stars" id="stars">
+                  <button data-v="1">★</button><button data-v="2">★</button><button data-v="3">★</button><button data-v="4">★</button><button data-v="5">★</button>
+                </div>
+                <input type="text" id="rating-comment" placeholder="Góp ý (tùy chọn, AI sẽ ghi nhớ)">
+                <button class="btn small" id="btn-rate">Gửi</button>
+                <span class="muted" id="rating-msg"></span>
+              </div>
+            </div>
+
+            <div class="card mindmap-card">
+              <div class="mindmap-toolbar">
+                <h2>Mind map</h2>
+                <div class="toolbar-buttons">
+                  <button class="btn small" id="mm-zoom-in" title="Phóng to">＋</button>
+                  <button class="btn small" id="mm-zoom-out" title="Thu nhỏ">－</button>
+                  <button class="btn small" id="mm-fit" title="Vừa khung">⤢</button>
+                  <button class="btn small" id="mm-add-child" title="Thêm nhánh con vào nút đang chọn">＋ nhánh</button>
+                  <button class="btn small" id="mm-delete" title="Xóa nút đang chọn">－ nút</button>
+                  <button class="btn small" id="mm-export-svg">SVG</button>
+                  <button class="btn small" id="mm-export-png">PNG</button>
+                </div>
+              </div>
+              <p class="muted small">Kéo để di chuyển, lăn chuột để phóng to/thu nhỏ, nhấp để chọn, nhấp đúp để sửa chữ, nhấp vòng tròn để thu gọn nhánh.</p>
+              <div class="mindmap-container" id="mindmap"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>Transcript <small class="muted" id="transcript-source"></small></h2>
+            <audio controls id="result-audio" hidden></audio>
+            <textarea id="edit-transcript" rows="10"></textarea>
+            <div class="row-actions">
+              <button class="btn" id="btn-save-transcript">💾 Lưu transcript (học thuật ngữ từ chỗ sửa)</button>
+              <button class="btn primary" id="btn-save-transcript-reanalyze">💾 Lưu &amp; phân tích lại</button>
+              <span class="muted" id="save-transcript-msg"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ HỌC HỎI ============================ -->
+      <section class="panel" id="tab-learning">
+        <div class="card">
+          <h2>AI local đang thông minh dần</h2>
+          <p class="muted">Mỗi lần bạn sửa tóm tắt, sửa transcript, đánh giá hay thêm thuật ngữ, ứng dụng ghi nhớ và dùng lại cho các cuộc họp sau: thuật ngữ đúng được đưa vào Whisper và LLM, bản tóm tắt bạn đã duyệt trở thành ví dụ mẫu, các cuộc họp trước thành bối cảnh.</p>
+          <div class="stats" id="stats"></div>
+          <div class="ai-setup" id="ai-setup"></div>
+          <div class="row-actions">
+            <a class="btn" href="/api/learning/export" download>⬇ Xuất dữ liệu huấn luyện (JSONL)</a>
+            <button class="btn" id="btn-reindex">♻ Nhúng lại trí nhớ</button>
+            <span class="muted" id="learning-msg"></span>
+          </div>
+        </div>
+
+        <div class="result-grid">
+          <div class="card">
+            <h2>Thuật ngữ &amp; tên riêng</h2>
+            <p class="muted small">Từ đúng được gợi ý cho Whisper khi nhận dạng; nếu có "dạng sai", ứng dụng tự sửa trong transcript. Các cặp do AI tự suy ra từ chỉnh sửa của bạn sẽ được áp dụng khi lặp lại đủ số lần.</p>
+            <form class="glossary-form" id="glossary-form">
+              <input type="text" id="glossary-term" placeholder="Từ đúng (VD: Nguyễn Minh Quang)" required>
+              <input type="text" id="glossary-variant" placeholder="Dạng hay bị nhận sai (tùy chọn)">
+              <button class="btn primary small" type="submit">Thêm</button>
+            </form>
+            <table class="glossary-table" id="glossary-table">
+              <thead><tr><th>Từ đúng</th><th>Dạng sai</th><th>Nguồn</th><th>Lần</th><th>Áp dụng</th><th></th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+
+          <div class="card">
+            <h2>Hỏi trí nhớ cuộc họp</h2>
+            <p class="muted small">Tìm trong tất cả cuộc họp đã lưu (LLM local sẽ trả lời nếu có; nếu không, hiển thị các đoạn liên quan nhất).</p>
+            <form class="ask-form" id="ask-form">
+              <input type="text" id="ask-input" placeholder="VD: Tuần trước đã chốt ngân sách bao nhiêu?" required>
+              <button class="btn primary small" type="submit">Hỏi</button>
+            </form>
+            <div class="ask-answer" id="ask-answer" hidden></div>
+            <ul class="ask-sources" id="ask-sources"></ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Nhật ký học hỏi</h2>
+          <ul class="events" id="events"></ul>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/mindmap.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
