@@ -22,6 +22,7 @@ from .llm import OllamaClient
 from .mindmap import normalize_mindmap, to_markdown
 from .pipeline import Pipeline
 from .summarizer import Analyzer, merge_llm_result
+from .textutil import nfc
 from .transcription import Transcriber
 
 log = logging.getLogger(__name__)
@@ -131,8 +132,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/meetings", status_code=201)
     def create_meeting(body: MeetingCreate) -> dict:
-        title = body.title.strip() or ("Cuộc họp" if settings.language.startswith("vi") else "Meeting")
-        participants = [p.strip() for p in body.participants if p and p.strip()]
+        title = nfc(body.title).strip() or ("Cuộc họp" if settings.language.startswith("vi") else "Meeting")
+        participants = [nfc(p).strip() for p in body.participants if p and p.strip()]
         return db.create_meeting(title, participants, normalize_language(body.language))
 
     @app.get("/api/meetings/{meeting_id}")
@@ -146,9 +147,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         get_meeting_or_404(meeting_id)
         fields: dict[str, Any] = {}
         if body.title is not None and body.title.strip():
-            fields["title"] = body.title.strip()
+            fields["title"] = nfc(body.title).strip()
         if body.participants is not None:
-            fields["participants"] = [p.strip() for p in body.participants if p and p.strip()]
+            fields["participants"] = [nfc(p).strip() for p in body.participants if p and p.strip()]
         if body.language:
             fields["language"] = normalize_language(body.language)
         db.update_meeting(meeting_id, **fields)
@@ -183,7 +184,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if duration_sec:
             fields["duration_sec"] = float(duration_sec)
         if live_transcript and live_transcript.strip():
-            fields["transcript"] = live_transcript.strip()
+            fields["transcript"] = nfc(live_transcript).strip()
             fields["transcript_source"] = "browser"
         db.update_meeting(meeting_id, **fields)
         return get_meeting_or_404(meeting_id)
@@ -211,7 +212,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         meeting = get_meeting_or_404(meeting_id)
         ensure_not_processing(meeting_id)
         original = meeting.get("transcript") or ""
-        edited = body.transcript.strip()
+        edited = nfc(body.transcript).strip()
         learned = glossary.learn_from_edit(original, edited) if original else []
         db.add_feedback(meeting_id, "transcript_edit", original=original, edited=edited)
         db.update_meeting(meeting_id, transcript=edited, transcript_source=(meeting.get("transcript_source") or "manual") + "+edited",
@@ -231,6 +232,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         original = meeting.get("analysis") or {}
         edited = dict(original)
         data = body.model_dump(exclude_none=True)
+        for key in ("summary", "decisions", "keywords"):
+            if key in data:
+                data[key] = [nfc(str(x)) for x in data[key]]
+        if "action_items" in data:
+            data["action_items"] = [{k: nfc(str(v)) if isinstance(v, str) else v for k, v in item.items()}
+                                    for item in data["action_items"] if isinstance(item, dict)]
         if "mindmap" in data:
             data["mindmap"] = normalize_mindmap(data["mindmap"], root_title=meeting["title"])
         edited = merge_llm_result(data, edited, meeting["title"])
@@ -300,8 +307,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/learning/ask")
     def learning_ask(body: AskIn) -> dict:
         language = body.language or settings.language
-        snippets = memory.search(body.question, kinds=["meeting", "chunk"], k=6)
-        answer = analyzer.answer(body.question, snippets, language)
+        question = nfc(body.question)
+        snippets = memory.search(question, kinds=["meeting", "chunk"], k=6)
+        answer = analyzer.answer(question, snippets, language)
         if answer is None:
             if snippets:
                 answer = ("Không có LLM local để trả lời; đây là các đoạn liên quan nhất:" if language.startswith("vi")
@@ -330,7 +338,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/glossary", status_code=201)
     def add_glossary(body: GlossaryIn) -> dict:
         try:
-            entry = glossary.add(body.term, body.variant, source="user")
+            entry = glossary.add(nfc(body.term), nfc(body.variant), source="user")
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         entry["active"] = True

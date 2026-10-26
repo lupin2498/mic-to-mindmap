@@ -58,3 +58,11 @@ def test_pipeline_language_helpers(settings):
     pipeline.settings = settings
     assert pipeline.analysis_language({"language": "auto"}) == settings.language
     assert pipeline.analysis_language({"language": "en"}) == "en"
+
+
+def test_repeated_sentences_are_deduplicated():
+    text = ("Chúng ta thống nhất ra mắt vào tháng ba. An sẽ gửi kế hoạch trước thứ sáu. " * 4)
+    result = analyze_heuristic(text, "Lặp", ["An"], "vi")
+    assert len(result["summary"]) == len({s.lower() for s in result["summary"]})
+    assert len(result["decisions"]) == 1
+    assert len(result["action_items"]) == 1

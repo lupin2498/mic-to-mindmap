@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
 from collections import Counter
 from typing import Iterable
 
@@ -39,12 +40,18 @@ _WORD_RE = re.compile(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", re.UNICODE)
 _SENT_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 
 
+def nfc(text: str | None) -> str:
+    """Chuẩn hóa Unicode về dạng dựng sẵn (NFC). Văn bản từ macOS/iOS hay ở dạng NFD (dấu tách rời),
+    khiến tách từ và so khớp thuật ngữ sai."""
+    return unicodedata.normalize("NFC", text) if text else (text or "")
+
+
 def normalize_ws(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip()
+    return re.sub(r"\s+", " ", nfc(text)).strip()
 
 
 def tokenize(text: str) -> list[str]:
-    return [m.group(0).lower() for m in _WORD_RE.finditer(text or "")]
+    return [m.group(0).lower() for m in _WORD_RE.finditer(nfc(text))]
 
 
 def content_tokens(text: str) -> list[str]:

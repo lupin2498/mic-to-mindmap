@@ -8,6 +8,8 @@ from .textutil import (
     capitalize_first,
     contains_phrase,
     extract_keywords,
+    nfc,
+    normalize_ws,
     score_sentences,
     split_sentences,
     tokenize,
@@ -36,6 +38,18 @@ DUE_PATTERNS = [
 _DUE_RE = re.compile("|".join(DUE_PATTERNS), re.IGNORECASE)
 
 
+def _dedupe(items: list, key=lambda item: item) -> list:
+    seen: set[str] = set()
+    out = []
+    for item in items:
+        k = normalize_ws(str(key(item))).lower()
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(item)
+    return out
+
+
 def _has_cue(sentence: str, cues: list[str]) -> bool:
     lowered = f" {sentence.lower()} "
     return any(f" {cue} " in lowered or lowered.strip().startswith(cue) for cue in cues)
@@ -61,7 +75,7 @@ def find_owner(sentence: str, participants: list[str]) -> str:
 
 def extract_decisions(sentences: list[str], limit: int = 6) -> list[str]:
     found = [capitalize_first(s) for s in sentences if _has_cue(s, DECISION_CUES)]
-    return [truncate(s, 160) for s in found[:limit]]
+    return _dedupe([truncate(s, 160) for s in found])[:limit]
 
 
 def extract_action_items(sentences: list[str], participants: list[str], limit: int = 8) -> list[dict]:
@@ -77,7 +91,7 @@ def extract_action_items(sentences: list[str], participants: list[str], limit: i
             "due": find_due(sentence),
         })
     items.sort(key=lambda it: (-(bool(it["owner"]) + bool(it["due"]))))
-    return items[:limit]
+    return _dedupe(items, key=lambda it: it["task"])[:limit]
 
 
 def build_mindmap(title: str, keywords: list[str], sentences: list[str], decisions: list[str],
@@ -110,13 +124,14 @@ def build_mindmap(title: str, keywords: list[str], sentences: list[str], decisio
 def analyze_heuristic(transcript: str, title: str = "", participants: list[str] | None = None,
                       language: str = "vi") -> dict:
     participants = participants or []
+    transcript = nfc(transcript)
     sentences = split_sentences(transcript)
     keywords = extract_keywords(transcript, limit=10, language=language)
     scored = score_sentences(sentences, transcript)
     limit = max(3, min(8, len(sentences) // 6 + 2))
     best = sorted(scored, key=lambda item: -item[1])[:limit]
     best.sort(key=lambda item: item[0])
-    summary = [truncate(capitalize_first(s), 180) for _, _, s in best]
+    summary = _dedupe([truncate(capitalize_first(s), 180) for _, _, s in best])
     decisions = extract_decisions(sentences)
     action_items = extract_action_items(sentences, participants)
     mindmap = build_mindmap(title or ("Cuộc họp" if language == "vi" else "Meeting"), keywords, sentences,

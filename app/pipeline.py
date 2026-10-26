@@ -9,6 +9,7 @@ from .config import Settings
 from .db import Database
 from .learning import FeedbackLearner, Glossary, MemoryStore, build_context, context_summary
 from .summarizer import Analyzer
+from .textutil import nfc
 from .transcription import Transcriber, TranscriberUnavailable
 
 log = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class Pipeline:
                 self.db.log_event("warning", f"Whisper lỗi ({str(exc)[:120]}), dùng transcript từ trình duyệt", meeting_id)
                 result = None
             if result and result.text.strip():
-                text, source, segments = result.text, f"whisper:{self.settings.whisper_model}", result.segments
+                text, source, segments = nfc(result.text), f"whisper:{self.settings.whisper_model}", result.segments
                 duration = duration or result.duration
                 if self.whisper_language(meeting) is None and result.language:
                     self.db.update_meeting(meeting_id, language=result.language)

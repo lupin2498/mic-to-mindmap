@@ -268,10 +268,20 @@
       const rect = this.container.getBoundingClientRect();
       const b = this._bounds();
       const pad = 30;
-      const scale = Math.min((rect.width - pad * 2) / b.w, (rect.height - pad * 2) / b.h, 1.4);
-      this.scale = Math.max(0.15, isFinite(scale) ? scale : 1);
+      if (!rect.width || !rect.height) return; // khung đang ẩn, sẽ fit lại khi hiện
+      let scale = Math.min((rect.width - pad * 2) / b.w, (rect.height - pad * 2) / b.h, 1.4);
+      if (!isFinite(scale) || scale <= 0) scale = 1;
+      // Màn hình hẹp: không thu nhỏ quá mức để chữ còn đọc được, người dùng kéo để xem phần còn lại
+      const minScale = rect.width < 600 ? 0.55 : 0.15;
+      this.scale = Math.max(minScale, scale);
       this.tx = rect.width / 2 - (b.x + b.w / 2) * this.scale;
       this.ty = rect.height / 2 - (b.y + b.h / 2) * this.scale;
+      if (this.scale === minScale && scale < minScale) {
+        // bản đồ rộng hơn khung: căn nút gốc vào giữa thay vì căn toàn bộ
+        const root = this.nodes[0];
+        this.tx = rect.width / 2 - (root.x + root.w / 2) * this.scale;
+        this.ty = rect.height / 2 - (root.y + root.h / 2) * this.scale;
+      }
       this._applyTransform();
     }
     zoom(factor, cx, cy) {

@@ -647,7 +647,17 @@
   // ----------------------------------------------------------------- init
   setupServerBox();
   $('#link-export-jsonl').href = apiUrl('/api/learning/export');
-  loadHealth();
-  loadMeetings().catch((err) => toast(err.message, true));
-  setInterval(loadHealth, 30000);
+  if (IS_MOBILE && !API_BASE) {
+    // Chưa cấu hình máy chủ: không gọi API, chỉ hướng dẫn nhập địa chỉ
+    $('#server-box').classList.add('warn');
+    $('#badge-whisper').className = 'badge off'; $('#badge-whisper').textContent = 'Whisper: ?';
+    $('#badge-ollama').className = 'badge off'; $('#badge-ollama').textContent = 'Chưa kết nối máy chủ';
+    $('#badge-memory').className = 'badge off'; $('#badge-memory').textContent = 'Trí nhớ: ?';
+    $('#meeting-list').innerHTML = '<li class="muted small" style="cursor:default">Nhập địa chỉ máy chủ AI (máy tính chạy ./run.sh --host 0.0.0.0) ở phía trên rồi nhấn Kết nối.</li>';
+    $('#server-url').focus();
+  } else {
+    loadHealth();
+    loadMeetings().catch((err) => toast(err.message, true));
+    setInterval(loadHealth, 30000);
+  }
 })();

@@ -41,3 +41,13 @@ def test_top_sentences_keeps_original_order():
 def test_truncate_adds_ellipsis_on_word_boundary():
     assert truncate("một hai ba bốn năm", 10) == "một hai…"
     assert truncate("ngắn", 10) == "ngắn"
+
+
+def test_nfd_input_is_normalized_before_tokenizing():
+    import unicodedata
+
+    from app.textutil import nfc, tokenize
+
+    nfd = unicodedata.normalize("NFD", "kế hoạch ra mắt sản phẩm mới")
+    assert tokenize(nfd) == ["kế", "hoạch", "ra", "mắt", "sản", "phẩm", "mới"]
+    assert nfc(nfd) == "kế hoạch ra mắt sản phẩm mới" and nfc("") == "" and nfc(None) == ""

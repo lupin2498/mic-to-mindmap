@@ -156,3 +156,18 @@ def test_edits_are_rejected_while_processing(client):
     finally:
         pipeline._running.discard(meeting["id"])
     assert client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": VI_TRANSCRIPT}).status_code == 200
+
+
+def test_nfd_unicode_is_normalized_on_input(client):
+    import unicodedata
+
+    title_nfd = unicodedata.normalize("NFD", "Họp sản phẩm")
+    meeting = client.post("/api/meetings", json={"title": title_nfd, "participants": [unicodedata.normalize("NFD", "Bình")]}).json()
+    assert meeting["title"] == "Họp sản phẩm" and meeting["participants"] == ["Bình"]
+    client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": unicodedata.normalize("NFD", VI_TRANSCRIPT)})
+    client.post(f"/api/meetings/{meeting['id']}/process", json={"transcribe": False})
+    meeting = client.get(f"/api/meetings/{meeting['id']}").json()
+    assert meeting["transcript"] == VI_TRANSCRIPT
+    assert "khách hàng" in meeting["analysis"]["keywords"]
+    entry = client.post("/api/glossary", json={"term": unicodedata.normalize("NFD", "Nguyễn Minh Quang")}).json()
+    assert entry["term"] == "Nguyễn Minh Quang"
