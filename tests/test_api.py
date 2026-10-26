@@ -129,3 +129,30 @@ def test_audio_without_transcript_and_without_whisper_reports_error(client):
     client.post(f"/api/meetings/{meeting['id']}/process")
     meeting = client.get(f"/api/meetings/{meeting['id']}").json()
     assert meeting["status"] == "error" and "faster-whisper" in meeting["error"]
+
+
+def test_auto_language_and_cors(client):
+    meeting = client.post("/api/meetings", json={"title": "Auto", "language": "auto"}).json()
+    assert meeting["language"] == "auto"
+    client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": VI_TRANSCRIPT})
+    client.post(f"/api/meetings/{meeting['id']}/process", json={"transcribe": False})
+    meeting = client.get(f"/api/meetings/{meeting['id']}").json()
+    assert meeting["status"] == "done" and meeting["analysis"]["mindmap"]["title"] == "Auto"
+    assert client.post("/api/meetings", json={"title": "x", "language": "  "}).json()["language"] == "vi"
+    resp = client.options("/api/meetings", headers={"Origin": "http://localhost", "Access-Control-Request-Method": "POST"})
+    assert resp.status_code == 200 and resp.headers.get("access-control-allow-origin") == "*"
+
+
+def test_edits_are_rejected_while_processing(client):
+    meeting = client.post("/api/meetings", json={"title": "Bận"}).json()
+    client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": VI_TRANSCRIPT})
+    pipeline = client.app.state.pipeline
+    pipeline._running.add(meeting["id"])
+    try:
+        assert client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": "x"}).status_code == 409
+        assert client.put(f"/api/meetings/{meeting['id']}/analysis", json={"summary": ["x"]}).status_code == 409
+        assert client.post(f"/api/meetings/{meeting['id']}/process").json()["started"] is False
+        assert client.get(f"/api/meetings/{meeting['id']}").json()["processing"] is True
+    finally:
+        pipeline._running.discard(meeting["id"])
+    assert client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": VI_TRANSCRIPT}).status_code == 200

@@ -87,6 +87,8 @@ class Transcriber:
         if not self.available():
             raise TranscriberUnavailable(self._import_error or "faster-whisper chưa được cài đặt")
         model = self._load()
+        if language and language.strip().lower() == "auto":
+            language = None
         segments_iter, info = model.transcribe(
             str(audio_path),
             language=language or None,

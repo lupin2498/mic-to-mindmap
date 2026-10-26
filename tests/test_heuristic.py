@@ -46,3 +46,15 @@ def test_empty_transcript_gives_empty_but_valid_result():
     result = analyze_heuristic("", "Trống", [], "vi")
     assert result["summary"] == [] and result["keywords"] == []
     assert result["mindmap"] == {"title": "Trống", "children": []}
+
+
+def test_pipeline_language_helpers(settings):
+    from app.pipeline import Pipeline
+
+    assert Pipeline.whisper_language({"language": "auto"}) is None
+    assert Pipeline.whisper_language({"language": ""}) is None
+    assert Pipeline.whisper_language({"language": "EN"}) == "en"
+    pipeline = Pipeline.__new__(Pipeline)
+    pipeline.settings = settings
+    assert pipeline.analysis_language({"language": "auto"}) == settings.language
+    assert pipeline.analysis_language({"language": "en"}) == "en"

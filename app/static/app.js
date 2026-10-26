@@ -5,13 +5,25 @@
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
   // ------------------------------------------------------------------ API
+  // Bản di động (Capacitor) gọi tới máy chủ AI trong mạng LAN; bản web dùng cùng origin.
+  const IS_MOBILE = !!window.M2M_MOBILE;
+  let API_BASE = '';
+  try { API_BASE = IS_MOBILE ? (localStorage.getItem('m2m.server') || '') : ''; } catch (_) { API_BASE = ''; }
+  API_BASE = API_BASE.replace(/\/+$/, '');
+  function apiUrl(path) { return path.startsWith('/') ? API_BASE + path : path; }
+
   async function request(method, url, body, isForm) {
     const options = { method, headers: {} };
     if (body !== undefined) {
       if (isForm) options.body = body;
       else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
     }
-    const resp = await fetch(url, options);
+    let resp;
+    try {
+      resp = await fetch(apiUrl(url), options);
+    } catch (err) {
+      throw new Error(IS_MOBILE ? `Không kết nối được máy chủ ${API_BASE || '(chưa cấu hình)'}: ${err.message}` : `Không kết nối được server: ${err.message}`);
+    }
     if (resp.status === 204) return null;
     const text = await resp.text();
     let data = null;
@@ -105,8 +117,24 @@
       }
       m.className = 'badge ok'; m.textContent = `Trí nhớ: ${h.embedder}`;
     } catch (err) {
-      $('#badge-ollama').textContent = 'Không kết nối được server';
+      state.health = null;
+      $('#badge-whisper').className = 'badge off'; $('#badge-whisper').textContent = 'Whisper: ?';
+      $('#badge-ollama').className = 'badge off'; $('#badge-ollama').textContent = IS_MOBILE ? 'Chưa kết nối máy chủ' : 'Không kết nối được server';
+      $('#badge-memory').className = 'badge off'; $('#badge-memory').textContent = 'Trí nhớ: ?';
+      if (IS_MOBILE) $('#server-box').classList.add('warn');
     }
+  }
+  function setupServerBox() {
+    const box = $('#server-box');
+    if (!IS_MOBILE) return;
+    box.hidden = false;
+    $('#server-url').value = API_BASE;
+    $('#btn-server-save').addEventListener('click', () => {
+      let value = $('#server-url').value.trim().replace(/\/+$/, '');
+      if (value && !/^https?:\/\//i.test(value)) value = `http://${value}`;
+      try { localStorage.setItem('m2m.server', value); } catch (_) {}
+      location.reload();
+    });
   }
 
   // ------------------------------------------------------------- meetings
@@ -142,6 +170,7 @@
 
   $('#btn-new-meeting').addEventListener('click', () => {
     state.current = null;
+    if (rec.recorder) cancelRecording();
     discardRecording();
     $('#meeting-title').value = '';
     $('#meeting-participants').value = '';
@@ -152,7 +181,7 @@
 
   // ------------------------------------------------------------ recording
   const rec = { recorder: null, stream: null, chunks: [], ctx: null, analyser: null, raf: null, timer: null,
-    startedAt: 0, accumulated: 0, paused: false, recognition: null, mime: '' };
+    startedAt: 0, accumulated: 0, paused: false, recognition: null, mime: '', discard: false };
 
   function pickMime() {
     const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'];
@@ -196,7 +225,7 @@
     const recognition = new SR();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = ($('#meeting-language').value || 'vi') === 'vi' ? 'vi-VN' : 'en-US';
+    recognition.lang = $('#meeting-language').value === 'en' ? 'en-US' : 'vi-VN';
     recognition.onresult = (event) => {
       let interim = '';
       for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -248,11 +277,13 @@
   function togglePause() {
     if (!rec.recorder) return;
     if (rec.recorder.state === 'recording') {
+      stopRecognition();
       rec.recorder.pause(); rec.accumulated = elapsed(); rec.paused = true; rec.startedAt = 0;
       $('#btn-pause').textContent = '▶ Tiếp tục'; $('#rec-state').textContent = 'Tạm dừng';
       $('#btn-record').classList.add('paused');
     } else if (rec.recorder.state === 'paused') {
       rec.recorder.resume(); rec.paused = false; rec.startedAt = Date.now();
+      if ($('#live-captions').checked) startRecognition();
       $('#btn-pause').textContent = '⏸ Tạm dừng'; $('#rec-state').textContent = 'Đang ghi âm…';
       $('#btn-record').classList.remove('paused');
     }
@@ -269,9 +300,14 @@
     $('#btn-pause').disabled = true; $('#btn-stop').disabled = true; $('#btn-pause').textContent = '⏸ Tạm dừng';
     $('#rec-state').textContent = 'Đã dừng. Nghe lại bên dưới rồi nhấn "Xử lý bằng AI".';
   }
+  function cancelRecording() {
+    rec.discard = true;
+    stopRecording();
+  }
   function finishRecording() {
     const blob = new Blob(rec.chunks, { type: rec.mime || 'audio/webm' });
     rec.recorder = null;
+    if (rec.discard) { rec.discard = false; rec.chunks = []; return; }
     if (!blob.size) { toast('Bản ghi trống', true); return; }
     setBlob(blob, extForMime(blob.type), state.duration);
   }
@@ -310,7 +346,7 @@
     return {
       title: $('#meeting-title').value.trim(),
       participants: $('#meeting-participants').value.split(',').map((s) => s.trim()).filter(Boolean),
-      language: $('#meeting-language').value || null,
+      language: $('#meeting-language').value || 'auto',
     };
   }
   function setProgress(text) {
@@ -363,10 +399,14 @@
       if (!working) {
         clearInterval(state.pollTimer);
         state.pollTimer = null;
-        renderMeeting(m);
-        showTab('result');
         loadMeetings();
         if (fromRecorder) { discardRecording(); $('#manual-transcript').value = ''; }
+        if (!fromRecorder && state.current && state.current.id !== id) {
+          toast(m.status === 'error' ? `Cuộc họp "${m.title}" xử lý lỗi: ${m.error}` : `Cuộc họp "${m.title}" đã xử lý xong`, m.status === 'error');
+          return;
+        }
+        renderMeeting(m);
+        showTab('result');
         if (m.status === 'error') toast(`Xử lý lỗi: ${m.error}`, true);
         else toast(`Xong! Engine: ${m.engine || (m.analysis && m.analysis.engine) || ''}`);
       }
@@ -416,8 +456,8 @@
     $('#edit-transcript').value = m.transcript || '';
     $('#transcript-source').textContent = m.transcript_source ? `(nguồn: ${m.transcript_source})` : '';
     const audio = $('#result-audio');
-    if (m.has_audio) { audio.hidden = false; audio.src = `/api/meetings/${m.id}/audio?t=${Date.now()}`; } else { audio.hidden = true; audio.removeAttribute('src'); }
-    $('#btn-export-md').href = `/api/meetings/${m.id}/export.md`;
+    if (m.has_audio) { audio.hidden = false; audio.src = apiUrl(`/api/meetings/${m.id}/audio?t=${Date.now()}`); } else { audio.hidden = true; audio.removeAttribute('src'); }
+    $('#btn-export-md').href = apiUrl(`/api/meetings/${m.id}/export.md`);
     $('#btn-export-md').download = `${m.title}.md`;
     state.mindmap.setTree(a.mindmap || { title: m.title, children: [] });
     state.rating = 0; renderStars();
@@ -605,6 +645,8 @@
   });
 
   // ----------------------------------------------------------------- init
+  setupServerBox();
+  $('#link-export-jsonl').href = apiUrl('/api/learning/export');
   loadHealth();
   loadMeetings().catch((err) => toast(err.message, true));
   setInterval(loadHealth, 30000);

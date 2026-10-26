@@ -98,3 +98,13 @@ def test_export_examples_jsonl(db, memory, feedback):
     assert len(rows) == 1 and rows[0]["output"]["summary"] == ["x"]
     assert FeedbackLearner.to_jsonl(rows).count("\n") == 1
     assert FeedbackLearner.to_jsonl([]) == ""
+
+
+def test_glossary_ignores_rewrites_and_strips_punctuation(glossary):
+    original = " ".join(f"từ{i}" for i in range(30))
+    rewritten = " ".join(f"khác{i}" for i in range(30))
+    assert glossary.learn_from_edit(original, rewritten) == []  # viết lại gần hết -> không học
+    learned = glossary.learn_from_edit("dự án an pha, bắt đầu " + original, "dự án Alpha, bắt đầu " + original)
+    assert [(e["variant"], e["term"]) for e in learned] == [("an pha", "Alpha")]
+    learned = glossary.learn_from_edit("gặp an pha. Xong", "gặp Alpha, xong")
+    assert [(e["variant"], e["term"]) for e in learned] == [("an pha", "Alpha")]

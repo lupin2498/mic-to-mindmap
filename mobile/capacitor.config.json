@@ -1,0 +1,15 @@
+{
+  "appId": "vn.mictomindmap.app",
+  "appName": "Mic to Mindmap",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "ios": {
+    "contentInset": "always"
+  }
+}

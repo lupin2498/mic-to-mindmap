@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mic to Mindmap</string>
+    <string name="title_activity_main">Mic to Mindmap</string>
+    <string name="package_name">vn.mictomindmap.app</string>
+    <string name="custom_url_scheme">vn.mictomindmap.app</string>
+</resources>

@@ -96,7 +96,7 @@ class OllamaClient:
 
     # ------------------------------------------------------------ generation
     def chat(self, system: str, user: str, *, json_mode: bool = False, temperature: float = 0.2,
-             num_ctx: int = 8192) -> str | None:
+             num_ctx: int = 12288) -> str | None:
         if not self.enabled:
             return None
         payload: dict[str, Any] = {

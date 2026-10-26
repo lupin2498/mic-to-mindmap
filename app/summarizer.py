@@ -11,7 +11,7 @@ from .textutil import normalize_ws, split_sentences
 
 log = logging.getLogger(__name__)
 
-MAX_DIRECT_CHARS = 14_000
+MAX_DIRECT_CHARS = 12_000
 CHUNK_CHARS = 9_000
 
 PROMPTS = {

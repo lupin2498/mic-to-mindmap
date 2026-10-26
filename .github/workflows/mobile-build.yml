@@ -1,0 +1,130 @@
+name: Mobile build (Android APK + iOS IPA)
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "mobile/**"
+      - "app/static/**"
+      - ".github/workflows/mobile-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platforms;android-35 build-tools;35.0.0 platform-tools"
+          log-accepted-android-sdk-licenses: false
+      - run: npm ci
+      - run: npm run build:web
+      - run: npx cap sync android
+      - name: Chuẩn bị keystore (nếu cấu hình secret ANDROID_KEYSTORE_BASE64)
+        if: ${{ env.KEYSTORE_B64 != '' }}
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+      - name: Build APK
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x android/gradlew
+          cd android
+          ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+      - name: Thu thập APK
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/mic-to-mindmap-debug.apk
+          cp android/app/build/outputs/apk/release/app-release.apk dist/mic-to-mindmap-release.apk
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: mobile/dist/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS IPA (chưa ký)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm run build:web
+      - run: npx cap copy ios
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Archive (không ký)
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphoneos -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" archive \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" DEVELOPMENT_TEAM="" \
+            | tail -n 60
+      - name: Đóng gói IPA
+        run: |
+          mkdir -p dist Payload
+          cp -R "$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app" Payload/
+          zip -qr dist/mic-to-mindmap-unsigned.ipa Payload
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa-unsigned
+          path: mobile/dist/*.ipa
+          if-no-files-found: error
+
+  release:
+    name: Đăng bản tải (pre-release mobile-latest)
+    needs: [android, ios]
+    if: ${{ always() && (needs.android.result == 'success' || needs.ios.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - run: ls -R artifacts
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: mobile-latest
+          name: "Bản di động mới nhất (build #${{ github.run_number }})"
+          prerelease: true
+          body: |
+            Build tự động từ commit ${{ github.sha }} (nhánh ${{ github.ref_name }}).
+
+            - `mic-to-mindmap-release.apk` / `mic-to-mindmap-debug.apk`: cài trực tiếp trên Android (bật "Cài ứng dụng không rõ nguồn gốc").
+            - `mic-to-mindmap-unsigned.ipa`: bộ cài iOS **chưa ký**. Ký bằng Apple ID qua Sideloadly/AltStore, hoặc mở `mobile/ios/App/App.xcodeproj` bằng Xcode, chọn Team của bạn rồi cài lên máy.
+
+            Trong ứng dụng, nhập địa chỉ máy chủ AI local (máy tính chạy `./run.sh --host 0.0.0.0`), ví dụ `http://192.168.1.10:8000`.
+          files: |
+            artifacts/**/*.apk
+            artifacts/**/*.ipa

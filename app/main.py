@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -90,6 +91,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     pipeline = Pipeline(settings, db, transcriber, analyzer, memory, glossary, feedback)
 
     app = FastAPI(title="Mic to Mindmap", version=__version__)
+    # Ứng dụng di động (Capacitor) gọi API từ origin khác trong mạng LAN
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
     app.state.settings = settings
     app.state.db = db
     app.state.pipeline = pipeline
@@ -99,6 +102,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if meeting is None:
             raise HTTPException(404, "Không tìm thấy cuộc họp")
         return meeting
+
+    def ensure_not_processing(meeting_id: str) -> None:
+        if pipeline.is_running(meeting_id):
+            raise HTTPException(409, "Cuộc họp đang được xử lý, vui lòng đợi xong rồi sửa")
+
+    def normalize_language(value: str | None) -> str:
+        value = (value or "").strip().lower()
+        return value if value else settings.language
 
     # ------------------------------------------------------------- health
     @app.get("/api/health")
@@ -122,7 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_meeting(body: MeetingCreate) -> dict:
         title = body.title.strip() or ("Cuộc họp" if settings.language.startswith("vi") else "Meeting")
         participants = [p.strip() for p in body.participants if p and p.strip()]
-        return db.create_meeting(title, participants, body.language or settings.language)
+        return db.create_meeting(title, participants, normalize_language(body.language))
 
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str) -> dict:
@@ -139,7 +150,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.participants is not None:
             fields["participants"] = [p.strip() for p in body.participants if p and p.strip()]
         if body.language:
-            fields["language"] = body.language
+            fields["language"] = normalize_language(body.language)
         db.update_meeting(meeting_id, **fields)
         return get_meeting_or_404(meeting_id)
 
@@ -198,6 +209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/meetings/{meeting_id}/transcript")
     def update_transcript(meeting_id: str, body: TranscriptUpdate) -> dict:
         meeting = get_meeting_or_404(meeting_id)
+        ensure_not_processing(meeting_id)
         original = meeting.get("transcript") or ""
         edited = body.transcript.strip()
         learned = glossary.learn_from_edit(original, edited) if original else []
@@ -215,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.put("/api/meetings/{meeting_id}/analysis")
     def update_analysis(meeting_id: str, body: AnalysisUpdate) -> dict:
         meeting = get_meeting_or_404(meeting_id)
+        ensure_not_processing(meeting_id)
         original = meeting.get("analysis") or {}
         edited = dict(original)
         data = body.model_dump(exclude_none=True)

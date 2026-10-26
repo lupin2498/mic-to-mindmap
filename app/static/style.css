@@ -36,6 +36,9 @@ small, .small { font-size: 12.5px; }
 .brand p { margin: 0; color: var(--muted); font-size: 13px; }
 .logo { font-size: 28px; }
 .ai-status { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.server-box { display: flex; gap: 6px; align-items: center; flex: 1; max-width: 460px; }
+.server-box input { margin: 0; }
+.server-box.warn input { border-color: var(--warn); }
 .badge {
   font-size: 12px; padding: 4px 10px; border-radius: 999px; background: #eef2ff; color: #3730a3;
   border: 1px solid #c7d2fe; white-space: nowrap;

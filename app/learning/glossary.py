@@ -8,6 +8,8 @@ from ..db import Database
 
 _TOKEN_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*|[^\w\s]", re.UNICODE)
 MAX_SPAN = 4
+# Nếu người dùng thay đổi quá tỉ lệ này của transcript thì đó là viết lại, không phải sửa lỗi nhận dạng
+MAX_CHANGE_RATIO = 0.35
 
 
 def _words(text: str) -> list[str]:
@@ -16,6 +18,16 @@ def _words(text: str) -> list[str]:
 
 def _is_wordy(tokens: list[str]) -> bool:
     return bool(tokens) and any(re.search(r"[^\W\d_]", t) for t in tokens)
+
+
+def _strip_punct(tokens: list[str]) -> list[str]:
+    """Bỏ các token dấu câu ở hai đầu một đoạn (vd: ['Alpha', ','] -> ['Alpha'])."""
+    start, end = 0, len(tokens)
+    while start < end and not re.search(r"\w", tokens[start]):
+        start += 1
+    while end > start and not re.search(r"\w", tokens[end - 1]):
+        end -= 1
+    return tokens[start:end]
 
 
 class Glossary:
@@ -56,11 +68,15 @@ class Glossary:
         if not a or not b or a == b:
             return []
         matcher = difflib.SequenceMatcher(a=[t.lower() for t in a], b=[t.lower() for t in b], autojunk=False)
+        opcodes = matcher.get_opcodes()
+        changed = sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in opcodes if tag != "equal")
+        if len(a) >= 20 and changed / len(a) > MAX_CHANGE_RATIO:
+            return []  # viết lại phần lớn nội dung: không coi là sửa lỗi nhận dạng
         learned: list[dict] = []
-        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        for tag, i1, i2, j1, j2 in opcodes:
             if tag != "replace":
                 continue
-            wrong, right = a[i1:i2], b[j1:j2]
+            wrong, right = _strip_punct(a[i1:i2]), _strip_punct(b[j1:j2])
             if len(wrong) > MAX_SPAN or len(right) > MAX_SPAN:
                 continue
             if not _is_wordy(wrong) or not _is_wordy(right):
