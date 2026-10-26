@@ -45,6 +45,17 @@ Gợi ý model cho tiếng Việt: `qwen2.5:7b` (cân bằng), `qwen2.5:14b` ho�
 
 > Ghi âm từ micro cần trang chạy trên `localhost` hoặc HTTPS. Tùy chọn "Phụ đề trực tiếp" dùng Web Speech API của trình duyệt (Chrome gửi âm thanh tới Google) nên **tắt mặc định**; chỉ bật khi chưa cài Whisper và không cần bảo mật tuyệt đối.
 
+## Ứng dụng di động (Android / iOS)
+
+Thư mục `mobile/` chứa ứng dụng [Capacitor](https://capacitorjs.com) bọc giao diện web: điện thoại ghi âm và xem kết quả, phần AI chạy trên máy tính trong cùng mạng LAN (`./run.sh --host 0.0.0.0`). Trong app nhập địa chỉ máy chủ, ví dụ `http://192.168.1.10:8000`, rồi nhấn **Kết nối**.
+
+Bản build sẵn do GitHub Actions tạo tự động nằm ở pre-release **[mobile-latest](https://github.com/lupin2498/mic-to-mindmap/releases/tag/mobile-latest)**:
+
+- `mic-to-mindmap-release.apk`: cài trực tiếp trên Android (cho phép cài từ nguồn không xác định).
+- `mic-to-mindmap-unsigned.ipa`: bộ cài iOS chưa ký; ký bằng Apple ID qua Sideloadly/AltStore hoặc mở `mobile/ios/App/App.xcodeproj` bằng Xcode rồi cài lên iPhone.
+
+Chi tiết build thủ công, ký release và cấu hình xem [`mobile/README.md`](mobile/README.md).
+
 ## Cấu hình (biến môi trường / `.env`)
 
 | Biến | Mặc định | Ý nghĩa |
