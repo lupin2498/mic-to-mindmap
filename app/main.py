@@ -19,13 +19,26 @@ from .config import Settings, load_settings
 from .db import Database
 from .learning import AutoEmbedder, FeedbackLearner, Glossary, MemoryStore
 from .llm import OllamaClient
-from .mindmap import normalize_mindmap, to_markdown
+from .mindmap import USER_MAX_CHILDREN, USER_MAX_DEPTH, normalize_mindmap, to_markdown
 from .pipeline import Pipeline
-from .summarizer import Analyzer, merge_llm_result
+from .summarizer import Analyzer, _as_action_items, _as_str_list
 from .textutil import nfc
 from .transcription import Transcriber
 
 log = logging.getLogger(__name__)
+
+
+def nfc_tree(value: Any) -> Any:
+    """Chuẩn hóa NFC mọi chuỗi trong cây JSON (mind map do giao diện gửi lên)."""
+    if isinstance(value, str):
+        return nfc(value)
+    if isinstance(value, list):
+        return [nfc_tree(v) for v in value]
+    if isinstance(value, dict):
+        return {nfc_tree(k): nfc_tree(v) for k, v in value.items()}
+    return value
+
+
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 ALLOWED_AUDIO_EXT = {".webm", ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".aac", ".wma", ".mkv"}
@@ -258,18 +271,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         original = meeting.get("analysis") or {}
         edited = dict(original)
         data = body.model_dump(exclude_none=True)
-        for key in ("summary", "decisions", "keywords"):
+        # Bản người dùng tự sửa: chỉ làm sạch, không cắt theo giới hạn dành cho kết quả LLM (12 ý, 12 nhánh, 4 cấp)
+        for key, max_len in (("summary", 2000), ("decisions", 2000), ("keywords", 200)):
             if key in data:
-                data[key] = [nfc(str(x)) for x in data[key]]
+                edited[key] = _as_str_list([nfc(str(x)) for x in data[key]], limit=500, max_len=max_len)
         if "action_items" in data:
-            data["action_items"] = [{k: nfc(str(v)) if isinstance(v, str) else v for k, v in item.items()}
-                                    for item in data["action_items"] if isinstance(item, dict)]
+            edited["action_items"] = _as_action_items(
+                [{k: nfc(v) if isinstance(v, str) else v for k, v in item.items()}
+                 for item in data["action_items"] if isinstance(item, dict)], limit=500)
         if "mindmap" in data:
-            data["mindmap"] = normalize_mindmap(data["mindmap"], root_title=meeting["title"])
-        edited = merge_llm_result(data, edited, meeting["title"])
-        for key in ("summary", "decisions", "action_items", "keywords"):
-            if key in data and not data[key]:
-                edited[key] = []
+            mindmap = normalize_mindmap(nfc_tree(data["mindmap"]), root_title=meeting["title"],
+                                        max_depth=USER_MAX_DEPTH, max_children=USER_MAX_CHILDREN)
+            if mindmap:
+                edited["mindmap"] = mindmap  # kể cả khi chỉ còn nút gốc: người dùng đã chủ động xóa hết nhánh
         edited["engine"] = original.get("engine", "manual")
         edited["edited"] = True
         db.update_meeting(meeting_id, analysis=edited)

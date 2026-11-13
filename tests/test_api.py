@@ -171,3 +171,32 @@ def test_nfd_unicode_is_normalized_on_input(client):
     assert "khách hàng" in meeting["analysis"]["keywords"]
     entry = client.post("/api/glossary", json={"term": unicodedata.normalize("NFD", "Nguyễn Minh Quang")}).json()
     assert entry["term"] == "Nguyễn Minh Quang"
+
+
+def test_user_edits_are_not_truncated_by_llm_output_limits(client):
+    """Giới hạn 12 ý / 12 nhánh / 4 cấp là để gọt kết quả LLM; bản người dùng tự sửa phải được lưu đủ."""
+    meeting = _create_and_process(client)
+    mid = meeting["id"]
+    summary = [f"Ý chính số {i}" for i in range(20)]
+    decisions = [f"Quyết định {i}" for i in range(15)]
+    actions = [{"task": f"Việc {i}", "owner": "An", "due": ""} for i in range(25)]
+    keywords = [f"từ khóa {i}" for i in range(20)]
+    deep = {"title": "Cấp 4", "children": [{"title": "Cấp 5", "children": [{"title": "Cấp 6", "children": []}]}]}
+    mindmap = {"title": "Gốc", "children": [{"title": f"Nhánh {i}", "children": []} for i in range(16)]}
+    mindmap["children"][0]["children"] = [{"title": "Cấp 2", "children": [{"title": "Cấp 3", "children": [deep]}]}]
+    body = client.put(f"/api/meetings/{mid}/analysis", json={"summary": summary, "decisions": decisions, "action_items": actions,
+                                                              "keywords": keywords, "mindmap": mindmap}).json()
+    saved = client.get(f"/api/meetings/{mid}").json()["analysis"]
+    assert body["analysis"] == saved
+    assert saved["summary"] == summary and saved["decisions"] == decisions and saved["keywords"] == keywords
+    assert saved["action_items"] == actions
+    assert saved["mindmap"] == mindmap
+
+    # xóa hết nhánh mind map rồi lưu: phải lưu đúng cây chỉ còn nút gốc, không âm thầm giữ cây cũ
+    body = client.put(f"/api/meetings/{mid}/analysis", json={"mindmap": {"title": "Gốc", "children": []}}).json()
+    assert body["analysis"]["mindmap"] == {"title": "Gốc", "children": []}
+    assert body["analysis"]["summary"] == summary  # trường không gửi lên thì giữ nguyên
+    # dữ liệu rác vẫn được chuẩn hóa, không gây lỗi
+    body = client.put(f"/api/meetings/{mid}/analysis", json={"mindmap": "không phải cây", "action_items": [{"x": 1}, {"task": "  "}]})
+    assert body.status_code == 200 and body.json()["analysis"]["action_items"] == []
+    assert body.json()["analysis"]["mindmap"]["title"] == "không phải cây"

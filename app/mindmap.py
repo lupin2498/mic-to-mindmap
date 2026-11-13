@@ -8,6 +8,9 @@ from .textutil import normalize_ws
 MAX_DEPTH = 4
 MAX_CHILDREN = 12
 MAX_TITLE = 140
+# Giới hạn cho cây do người dùng tự sửa trên giao diện (chỉ để chặn dữ liệu quá khổ)
+USER_MAX_DEPTH = 12
+USER_MAX_CHILDREN = 100
 
 _TITLE_KEYS = ("title", "name", "label", "text", "topic", "node")
 _CHILD_KEYS = ("children", "nodes", "items", "subtopics", "branches", "sub")
@@ -46,8 +49,11 @@ def _children_of(node: Any) -> list:
     return []
 
 
-def normalize_mindmap(raw: Any, root_title: str = "Cuộc họp", depth: int = 0) -> dict | None:
-    """Chuyển cấu trúc bất kỳ (từ LLM hoặc người dùng) thành {"title", "children": [...]}."""
+def normalize_mindmap(raw: Any, root_title: str = "Cuộc họp", depth: int = 0, *, max_depth: int = MAX_DEPTH,
+                      max_children: int = MAX_CHILDREN) -> dict | None:
+    """Chuyển cấu trúc bất kỳ (từ LLM hoặc người dùng) thành {"title", "children": [...]}.
+
+    Giới hạn mặc định dùng để gọt kết quả LLM; bản người dùng tự sửa truyền giới hạn rộng hơn (USER_MAX_*)."""
     if raw is None:
         return None
     if isinstance(raw, list):
@@ -58,9 +64,10 @@ def normalize_mindmap(raw: Any, root_title: str = "Cuộc họp", depth: int = 0
     title = title[:MAX_TITLE]
     children: list[dict] = []
     seen: set[str] = set()
-    if depth < MAX_DEPTH - 1:
+    if depth < max_depth - 1:
         for child in _children_of(raw):
-            norm = normalize_mindmap(child, root_title="", depth=depth + 1)
+            norm = normalize_mindmap(child, root_title="", depth=depth + 1, max_depth=max_depth,
+                                     max_children=max_children)
             if not norm:
                 continue
             key = norm["title"].lower()
@@ -68,7 +75,7 @@ def normalize_mindmap(raw: Any, root_title: str = "Cuộc họp", depth: int = 0
                 continue
             seen.add(key)
             children.append(norm)
-            if len(children) >= MAX_CHILDREN:
+            if len(children) >= max_children:
                 break
     return {"title": title, "children": children}
 
