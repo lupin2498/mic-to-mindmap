@@ -114,8 +114,11 @@ class MemoryStore:
             if memory["embedding_model"] == model:
                 continue
             vec, name, _ = self.embedder.embed(memory["text"])
+            if name == memory["embedding_model"]:
+                continue  # model nhúng lỗi và mảnh này vốn đã ở dạng dự phòng: không có gì đổi
             self.db.update_memory_embedding(memory["id"], vec, name)
-            updated += 1
+            if name == model:
+                updated += 1
         return updated
 
     def stats(self) -> dict:

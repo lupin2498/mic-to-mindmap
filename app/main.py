@@ -82,6 +82,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
     settings.ensure_dirs()
     db = Database(settings.db_path)
+    # Máy chủ bị tắt giữa lúc xử lý: không còn luồng nào chạy tiếp, đừng để cuộc họp kẹt ở "đang xử lý"
+    interrupted = db.fail_interrupted_meetings(
+        "Quá trình xử lý bị gián đoạn vì máy chủ dừng giữa chừng. Nhấn \"Phân tích lại\" để chạy lại.")
+    if interrupted:
+        log.warning("Đặt lại %d cuộc họp bị gián đoạn khi máy chủ dừng", interrupted)
     ollama = OllamaClient(settings.ollama_url, settings.ollama_model, settings.ollama_embed_model,
                           timeout=settings.ollama_timeout, enabled=not settings.disable_ollama)
     transcriber = Transcriber(settings)
@@ -128,7 +133,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ----------------------------------------------------------- meetings
     @app.get("/api/meetings")
     def list_meetings(q: str | None = None) -> list[dict]:
-        return db.list_meetings(query=q)
+        return db.list_meetings(query=nfc(q).strip() if q else None)
 
     @app.post("/api/meetings", status_code=201)
     def create_meeting(body: MeetingCreate) -> dict:
@@ -169,17 +174,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def upload_audio(meeting_id: str, audio: UploadFile = File(...), duration_sec: float | None = Form(None),
                      live_transcript: str | None = Form(None)) -> dict:
         get_meeting_or_404(meeting_id)
+        ensure_not_processing(meeting_id)
         filename = audio.filename or "recording.webm"
         ext = Path(filename).suffix.lower()
         if ext not in ALLOWED_AUDIO_EXT:
             guessed = mimetypes.guess_extension((audio.content_type or "").split(";")[0]) or ""
             ext = guessed if guessed in ALLOWED_AUDIO_EXT else ".webm"
         target = settings.audio_dir / f"{meeting_id}-{uuid.uuid4().hex[:6]}{ext}"
-        with target.open("wb") as fh:
-            shutil.copyfileobj(audio.file, fh)
+        try:
+            with target.open("wb") as fh:
+                shutil.copyfileobj(audio.file, fh)
+        except Exception:
+            target.unlink(missing_ok=True)  # ghi dở (vd: hết dung lượng): không để lại file rác
+            raise
+        if target.stat().st_size == 0:
+            target.unlink(missing_ok=True)
+            raise HTTPException(400, "File âm thanh rỗng")
         old_path, _ = db.get_meeting_audio_path(meeting_id)
-        if old_path and old_path != str(target):
-            Path(old_path).unlink(missing_ok=True)
         fields: dict[str, Any] = {"audio_path": str(target), "audio_mime": audio.content_type, "status": "recorded"}
         if duration_sec:
             fields["duration_sec"] = float(duration_sec)
@@ -187,6 +198,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fields["transcript"] = nfc(live_transcript).strip()
             fields["transcript_source"] = "browser"
         db.update_meeting(meeting_id, **fields)
+        if db.get_meeting(meeting_id) is None:
+            target.unlink(missing_ok=True)  # cuộc họp bị xóa trong lúc đang tải lên
+            raise HTTPException(404, "Không tìm thấy cuộc họp")
+        # ghi bản mới xong mới xóa bản cũ
+        if old_path and old_path != str(target):
+            Path(old_path).unlink(missing_ok=True)
         return get_meeting_or_404(meeting_id)
 
     @app.get("/api/meetings/{meeting_id}/audio")
@@ -195,7 +212,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         audio_path, mime = db.get_meeting_audio_path(meeting_id)
         if not audio_path or not Path(audio_path).exists():
             raise HTTPException(404, "Cuộc họp không có file âm thanh")
-        return FileResponse(audio_path, media_type=(mime or "application/octet-stream").split(";")[0])
+        # audio_mime do client gửi lên: chỉ phát lại dưới dạng âm thanh/video, không bao giờ là HTML/script
+        media_type = (mime or "").split(";")[0].strip().lower()
+        if not media_type.startswith(("audio/", "video/")):
+            media_type = "application/octet-stream"
+        return FileResponse(audio_path, media_type=media_type, headers={"X-Content-Type-Options": "nosniff"})
 
     @app.post("/api/meetings/{meeting_id}/process", status_code=202)
     def process_meeting(meeting_id: str, body: ProcessIn | None = None) -> dict:
@@ -214,8 +235,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         original = meeting.get("transcript") or ""
         edited = nfc(body.transcript).strip()
         learned = glossary.learn_from_edit(original, edited) if original else []
-        db.add_feedback(meeting_id, "transcript_edit", original=original, edited=edited)
-        db.update_meeting(meeting_id, transcript=edited, transcript_source=(meeting.get("transcript_source") or "manual") + "+edited",
+        source = meeting.get("transcript_source") or "manual"
+        if original.strip() and edited != original:
+            # chỉ là "chỉnh sửa" khi đã có transcript trước đó và nội dung thật sự đổi
+            db.add_feedback(meeting_id, "transcript_edit", original=original, edited=edited)
+            if not source.endswith("+edited"):
+                source += "+edited"
+        db.update_meeting(meeting_id, transcript=edited, transcript_source=source,
                           status="transcribed" if not meeting.get("analysis") else meeting["status"])
         if learned:
             db.log_event("glossary", f"Ghi nhận {len(learned)} cặp sửa lỗi từ chỉnh sửa transcript", meeting_id)

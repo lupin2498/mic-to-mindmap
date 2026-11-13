@@ -71,9 +71,16 @@ class OllamaClient:
     def available(self, refresh: bool = False) -> bool:
         return bool(self.models(refresh))
 
+    @staticmethod
+    def _canonical(name: str) -> str:
+        """Tên model kèm tag; Ollama coi tên không ghi tag là ':latest'."""
+        name = (name or "").strip()
+        return name if ":" in name.rsplit("/", 1)[-1] else f"{name}:latest"
+
     def has_model(self, name: str) -> bool:
-        base = name.split(":")[0]
-        return any(m == name or m.split(":")[0] == base for m in self.models())
+        # Phải khớp cả tag: có "qwen2.5:14b" thì gọi "qwen2.5:7b" vẫn bị Ollama trả 404.
+        wanted = self._canonical(name)
+        return any(self._canonical(m) == wanted for m in self.models())
 
     def chat_available(self) -> bool:
         return self.available() and self.has_model(self.model)

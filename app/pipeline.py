@@ -111,7 +111,10 @@ class Pipeline:
     # --------------------------------------------------------------- runners
     def run(self, meeting_id: str, *, do_transcribe: bool = True, force_transcribe: bool = False) -> dict | None:
         try:
-            if do_transcribe:
+            meeting = self.db.get_meeting(meeting_id)
+            has_transcript = bool(meeting and (meeting.get("transcript") or "").strip())
+            # "Phân tích lại" một cuộc họp mà lần nhận dạng trước bị lỗi: chưa có transcript thì phải nhận dạng đã
+            if do_transcribe or not has_transcript:
                 self.transcribe(meeting_id, force=force_transcribe)
             return self.analyze(meeting_id)
         except Exception as exc:  # noqa: BLE001 - lỗi được ghi vào cuộc họp để UI hiển thị
@@ -119,8 +122,15 @@ class Pipeline:
             self.db.update_meeting(meeting_id, status="error", error=str(exc))
             return None
         finally:
-            with self._lock:
-                self._running.discard(meeting_id)
+            try:
+                # Cuộc họp bị xóa trong lúc đang xử lý: dọn trí nhớ vừa ghi để mục đã xóa không "sống lại"
+                if self.db.get_meeting(meeting_id) is None:
+                    self.memory.forget_meeting(meeting_id)
+            except Exception:  # noqa: BLE001
+                log.exception("Không dọn được trí nhớ của cuộc họp đã xóa %s", meeting_id)
+            finally:
+                with self._lock:
+                    self._running.discard(meeting_id)
 
     def start(self, meeting_id: str, *, do_transcribe: bool = True, force_transcribe: bool = False) -> bool:
         with self._lock:

@@ -173,8 +173,11 @@ class Database:
         sql = "SELECT * FROM meetings"
         params: list[Any] = []
         if query:
-            sql += " WHERE title LIKE ? OR transcript LIKE ? OR analysis LIKE ?"
-            like = f"%{query}%"
+            # % và _ người dùng gõ là ký tự thường, không phải ký tự đại diện của LIKE
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            sql += (" WHERE title LIKE ? ESCAPE '\\' OR transcript LIKE ? ESCAPE '\\'"
+                    " OR analysis LIKE ? ESCAPE '\\'")
+            like = f"%{escaped}%"
             params = [like, like, like]
         sql += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
@@ -194,6 +197,16 @@ class Database:
         assignments = ", ".join(f"{k} = ?" for k in encoded)
         with self.connect() as conn:
             conn.execute(f"UPDATE meetings SET {assignments} WHERE id = ?", (*encoded.values(), meeting_id))
+
+    def fail_interrupted_meetings(self, message: str) -> int:
+        """Chuyển các cuộc họp còn ở trạng thái đang xử lý (sót lại từ lần chạy trước) sang lỗi."""
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE meetings SET status = 'error', error = ?, updated_at = ?"
+                " WHERE status IN ('queued', 'transcribing', 'analyzing')",
+                (message, now_iso()),
+            )
+            return int(cur.rowcount)
 
     def delete_meeting(self, meeting_id: str) -> None:
         with self.connect() as conn:
