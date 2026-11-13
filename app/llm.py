@@ -10,11 +10,21 @@ from typing import Any
 
 import httpx
 
+from .textutil import scrub_json, scrub_text
+
 log = logging.getLogger(__name__)
 
 
 def extract_json(text: str) -> dict | None:
-    """Tìm và parse đối tượng JSON đầu tiên trong văn bản trả về từ LLM."""
+    """Tìm và parse đối tượng JSON đầu tiên trong văn bản trả về từ LLM (đã làm sạch surrogate lẻ, lồng quá sâu)."""
+    try:
+        data = _extract_json(text)
+    except RecursionError:  # JSON lồng hàng nghìn cấp: coi như không hợp lệ
+        return None
+    return scrub_json(data) if data is not None else None
+
+
+def _extract_json(text: str) -> dict | None:
     if not text:
         return None
     text = text.strip()
@@ -120,7 +130,8 @@ class OllamaClient:
         try:
             resp = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=self.timeout)
             resp.raise_for_status()
-            return resp.json().get("message", {}).get("content", "")
+            content = resp.json().get("message", {}).get("content", "")
+            return scrub_text(content) if isinstance(content, str) else ""
         except Exception as exc:  # noqa: BLE001
             log.warning("Ollama chat lỗi: %s", exc)
             return None

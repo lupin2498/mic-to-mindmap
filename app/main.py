@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import mimetypes
 import shutil
 import uuid
@@ -12,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from . import __version__
 from .config import Settings, load_settings
@@ -22,7 +23,7 @@ from .llm import OllamaClient
 from .mindmap import USER_MAX_CHILDREN, USER_MAX_DEPTH, normalize_mindmap, to_markdown
 from .pipeline import Pipeline
 from .summarizer import Analyzer, _as_action_items, _as_str_list
-from .textutil import nfc
+from .textutil import nfc, scrub_json
 from .transcription import Transcriber
 
 log = logging.getLogger(__name__)
@@ -41,28 +42,41 @@ def nfc_tree(value: Any) -> Any:
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
+# Thời lượng do client báo chỉ để hiển thị: bỏ qua giá trị âm, vô cực, NaN hay phi lý (trên 30 ngày)
+MAX_DURATION_SEC = 30 * 24 * 3600
+SQLITE_MAX_INT = 2**63 - 1
+
 ALLOWED_AUDIO_EXT = {".webm", ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".aac", ".wma", ".mkv"}
 
 
 # ------------------------------------------------------------------ schemas
-class MeetingCreate(BaseModel):
+class ApiModel(BaseModel):
+    """Mọi thân request JSON đi qua đây trước: bỏ surrogate lẻ, cắt phần lồng quá sâu (xem textutil.scrub_json)."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _scrub(cls, data: Any) -> Any:
+        return scrub_json(data)
+
+
+class MeetingCreate(ApiModel):
     title: str = Field(default="", max_length=200)
     participants: list[str] = Field(default_factory=list)
     language: str | None = None
 
 
-class MeetingUpdate(BaseModel):
+class MeetingUpdate(ApiModel):
     title: str | None = Field(default=None, max_length=200)
     participants: list[str] | None = None
     language: str | None = None
 
 
-class TranscriptUpdate(BaseModel):
+class TranscriptUpdate(ApiModel):
     transcript: str
     reanalyze: bool = False
 
 
-class AnalysisUpdate(BaseModel):
+class AnalysisUpdate(ApiModel):
     summary: list[str] | None = None
     decisions: list[str] | None = None
     action_items: list[dict] | None = None
@@ -70,22 +84,22 @@ class AnalysisUpdate(BaseModel):
     mindmap: Any | None = None
 
 
-class RatingIn(BaseModel):
+class RatingIn(ApiModel):
     rating: int = Field(ge=1, le=5)
     comment: str | None = Field(default=None, max_length=1000)
 
 
-class GlossaryIn(BaseModel):
+class GlossaryIn(ApiModel):
     term: str = Field(min_length=1, max_length=120)
     variant: str = Field(default="", max_length=120)
 
 
-class AskIn(BaseModel):
+class AskIn(ApiModel):
     question: str = Field(min_length=1, max_length=1000)
     language: str | None = None
 
 
-class ProcessIn(BaseModel):
+class ProcessIn(ApiModel):
     transcribe: bool = True
     force_transcribe: bool = False
 
@@ -205,7 +219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(400, "File âm thanh rỗng")
         old_path, _ = db.get_meeting_audio_path(meeting_id)
         fields: dict[str, Any] = {"audio_path": str(target), "audio_mime": audio.content_type, "status": "recorded"}
-        if duration_sec:
+        if duration_sec and math.isfinite(duration_sec) and 0 < duration_sec < MAX_DURATION_SEC:
             fields["duration_sec"] = float(duration_sec)
         if live_transcript and live_transcript.strip():
             fields["transcript"] = nfc(live_transcript).strip()
@@ -386,7 +400,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/glossary/{entry_id}", status_code=204)
     def delete_glossary(entry_id: int) -> Response:
-        if not glossary.remove(entry_id):
+        # số ngoài khoảng INTEGER của SQLite chắc chắn không phải id có thật (và làm sqlite3 ném OverflowError)
+        if not 0 < entry_id <= SQLITE_MAX_INT or not glossary.remove(entry_id):
             raise HTTPException(404, "Không tìm thấy thuật ngữ")
         return Response(status_code=204)
 

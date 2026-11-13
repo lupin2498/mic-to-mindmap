@@ -46,6 +46,32 @@ def nfc(text: str | None) -> str:
     return unicodedata.normalize("NFC", text) if text else (text or "")
 
 
+_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+# Sâu hơn mức này không phải dữ liệu thật của ứng dụng (mind map người dùng sửa tối đa 12 cấp)
+MAX_JSON_DEPTH = 64
+
+
+def scrub_text(text: str) -> str:
+    """Thay surrogate lẻ (nửa emoji do chuỗi bị cắt giữa chừng, viết thành "\\ud83d" trong JSON) bằng U+FFFD.
+
+    Chuỗi còn surrogate lẻ không mã hóa được sang UTF-8: SQLite từ chối lưu, phản hồi JSON không gửi đi được."""
+    return _LONE_SURROGATE_RE.sub("\ufffd", text)
+
+
+def scrub_json(value, _depth: int = 0):
+    """Làm sạch dữ liệu vừa đọc từ JSON (thân request hoặc trả lời của LLM): bỏ surrogate lẻ trong mọi chuỗi
+    và cắt phần lồng sâu quá MAX_JSON_DEPTH để các bước đệ quy phía sau không tràn ngăn xếp."""
+    if isinstance(value, str):
+        return scrub_text(value)
+    if isinstance(value, (list, dict)):
+        if _depth >= MAX_JSON_DEPTH:
+            return None
+        if isinstance(value, list):
+            return [scrub_json(v, _depth + 1) for v in value]
+        return {scrub_text(k) if isinstance(k, str) else k: scrub_json(v, _depth + 1) for k, v in value.items()}
+    return value
+
+
 def normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", nfc(text)).strip()
 

@@ -45,6 +45,7 @@ class FakeOllama:
         self.embed_dims = embed_dims
         self.chat_delay = 0.0
         self.chat_status = 200
+        self.raw_chat_body: str | None = None  # gửi nguyên văn chuỗi này làm thân trả lời của /api/chat
         self.embed_fail = False
         self.requests: list[tuple[str, dict]] = []
         self._lock = threading.Lock()
@@ -93,6 +94,9 @@ class FakeOllama:
                         time.sleep(outer.chat_delay)
                     if outer.chat_status != 200:
                         self._send(outer.chat_status, {"error": "boom"})
+                        return
+                    if outer.raw_chat_body is not None:
+                        self._send(200, outer.raw_chat_body)
                         return
                     reply = outer.chat_reply(payload) if callable(outer.chat_reply) else outer.chat_reply
                     content = reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
