@@ -585,6 +585,39 @@ step('chu-dai: chữ rất dài không dấu cách không đẩy nút ra khỏi 
   for (const g of (await api('GET', '/api/glossary')).data) if (g.term.startsWith(long)) await api('DELETE', `/api/glossary/${g.id}`);
 });
 
+step('gioi-han: nhập dài quá giới hạn của máy chủ thì ô nhập tự chặn, không hiện lỗi JSON thô', async (ctx) => {
+  const page = ctx.page = await open(API + '/', DESKTOP);
+  // Giới hạn của API: tiêu đề 200, góp ý 1000, thuật ngữ 120, câu hỏi 1000 ký tự
+  await analyzeText(page, 'Tiêu đề rất dài '.repeat(30));
+  const toastText = () => page.evaluate(() => { const t = document.querySelector('#toast'); return t.hidden ? '' : t.textContent; });
+  await until(async () => (await activeTab(page)) === 'result' || (await toastText()) !== '', 'có kết quả hoặc thông báo');
+  const shown = await toastText();
+  assert(!/string_too_long|"loc"/.test(shown), `không hiện lỗi kiểm tra dữ liệu dạng JSON thô: ${shown.slice(0, 120)}`);
+  await until(() => page.evaluate(() => document.querySelector('#result-status').hidden && !document.querySelector('#result-body').hidden), 'hiện kết quả');
+  const kept = (await page.inputValue('#result-title')).length;   // máy chủ bỏ dấu cách cuối nên có thể là 199
+  assert(kept >= 199 && kept <= 200, `tiêu đề được cắt ở 200 ký tự (nhận ${kept})`);
+  await page.fill('#result-title', 'Đổi tên dài '.repeat(40));
+  await page.locator('#result-title').blur();
+  await page.click('#stars button[data-v="5"]');
+  await page.fill('#rating-comment', 'góp ý dài '.repeat(200));
+  await page.click('#btn-rate');
+  await until(() => page.evaluate(() => document.querySelector('#rating-msg').textContent.trim() !== ''), 'đánh giá kèm góp ý dài được ghi nhận');
+  await page.click('.tab[data-tab="learning"]');
+  await page.fill('#glossary-term', 'Thuật ngữ dài '.repeat(20));
+  await page.fill('#glossary-variant', 'dạng sai dài '.repeat(20));
+  await page.press('#glossary-term', 'Enter');
+  await until(async () => (await api('GET', '/api/glossary')).data.some((g) => g.term.startsWith('Thuật ngữ dài') && g.term.length <= 120 && g.variant.length <= 120),
+    'thuật ngữ dài được thêm sau khi ô nhập chặn ở 120 ký tự');
+  await page.fill('#ask-input', 'ngân sách chiến dịch '.repeat(80));
+  await page.press('#ask-input', 'Enter');
+  await until(() => page.evaluate(() => !document.querySelector('#ask-answer').hidden), 'câu hỏi dài vẫn có trả lời');
+  assert(!(await page.textContent('#ask-answer')).startsWith('Lỗi'), 'trả lời không phải thông báo lỗi');
+  const renamed = await findMeeting('Đổi tên dài '.repeat(40).slice(0, 200).trim());
+  assert(renamed, 'tiêu đề mới (cắt ở 200 ký tự) đã được lưu');
+  await api('DELETE', `/api/meetings/${renamed.id}`);
+  for (const g of (await api('GET', '/api/glossary')).data) if (g.term.startsWith('Thuật ngữ dài')) await api('DELETE', `/api/glossary/${g.id}`);
+});
+
 step('ngon-ngu: tiếng Anh và transcript không dấu câu vẫn ra kết quả', async (ctx) => {
   const page = ctx.page = await open(API + '/', DESKTOP);
   await page.selectOption('#meeting-language', 'en');

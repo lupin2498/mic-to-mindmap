@@ -47,7 +47,7 @@
           <h2>Thông tin cuộc họp</h2>
           <div class="grid-2">
             <label>Tiêu đề
-              <input type="text" id="meeting-title" placeholder="VD: Họp kế hoạch quý 4">
+              <input type="text" id="meeting-title" maxlength="200" placeholder="VD: Họp kế hoạch quý 4">
             </label>
             <label>Ngôn ngữ
               <select id="meeting-language">
@@ -120,7 +120,7 @@
         <div id="result-body" hidden>
           <div class="card result-header">
             <div>
-              <input type="text" class="title-input" id="result-title" title="Nhấp để đổi tiêu đề" aria-label="Tiêu đề cuộc họp">
+              <input type="text" class="title-input" id="result-title" maxlength="200" title="Nhấp để đổi tiêu đề" aria-label="Tiêu đề cuộc họp">
               <div class="meta" id="result-meta"></div>
             </div>
             <div class="header-actions">
@@ -154,7 +154,7 @@
                 <div class="stars" id="stars">
                   <button data-v="1" aria-label="1 sao">★</button><button data-v="2" aria-label="2 sao">★</button><button data-v="3" aria-label="3 sao">★</button><button data-v="4" aria-label="4 sao">★</button><button data-v="5" aria-label="5 sao">★</button>
                 </div>
-                <input type="text" id="rating-comment" aria-label="Góp ý về kết quả" placeholder="Góp ý (tùy chọn, AI sẽ ghi nhớ)">
+                <input type="text" id="rating-comment" maxlength="1000" aria-label="Góp ý về kết quả" placeholder="Góp ý (tùy chọn, AI sẽ ghi nhớ)">
                 <button class="btn small" id="btn-rate">Gửi</button>
                 <span class="muted" id="rating-msg"></span>
               </div>
@@ -210,8 +210,8 @@
             <h2>Thuật ngữ &amp; tên riêng</h2>
             <p class="muted small">Từ đúng được gợi ý cho Whisper khi nhận dạng; nếu có "dạng sai", ứng dụng tự sửa trong transcript. Các cặp do AI tự suy ra từ chỉnh sửa của bạn sẽ được áp dụng khi lặp lại đủ số lần.</p>
             <form class="glossary-form" id="glossary-form">
-              <input type="text" id="glossary-term" aria-label="Từ đúng" placeholder="Từ đúng (VD: Nguyễn Minh Quang)" required>
-              <input type="text" id="glossary-variant" aria-label="Dạng hay bị nhận sai" placeholder="Dạng hay bị nhận sai (tùy chọn)">
+              <input type="text" id="glossary-term" maxlength="120" aria-label="Từ đúng" placeholder="Từ đúng (VD: Nguyễn Minh Quang)" required>
+              <input type="text" id="glossary-variant" maxlength="120" aria-label="Dạng hay bị nhận sai" placeholder="Dạng hay bị nhận sai (tùy chọn)">
               <button class="btn primary small" type="submit">Thêm</button>
             </form>
             <table class="glossary-table" id="glossary-table">
@@ -224,7 +224,7 @@
             <h2>Hỏi trí nhớ cuộc họp</h2>
             <p class="muted small">Tìm trong tất cả cuộc họp đã lưu (LLM local sẽ trả lời nếu có; nếu không, hiển thị các đoạn liên quan nhất).</p>
             <form class="ask-form" id="ask-form">
-              <input type="text" id="ask-input" aria-label="Câu hỏi cho trí nhớ cuộc họp" placeholder="VD: Tuần trước đã chốt ngân sách bao nhiêu?" required>
+              <input type="text" id="ask-input" maxlength="1000" aria-label="Câu hỏi cho trí nhớ cuộc họp" placeholder="VD: Tuần trước đã chốt ngân sách bao nhiêu?" required>
               <button class="btn primary small" type="submit">Hỏi</button>
             </form>
             <div class="ask-answer" id="ask-answer" hidden></div>
