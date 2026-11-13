@@ -297,6 +297,15 @@
       rec.stream.getTracks().forEach((t) => t.stop());
       toast(`Trình duyệt không ghi âm được: ${err.message}`, true); return;
     }
+    // Micro bị rút/thu hồi/app khác chiếm giữa chừng: dừng và giữ phần đã ghi, đừng để đồng hồ chạy tiếp trên bản ghi câm
+    const activeRecorder = rec.recorder;
+    rec.stream.getAudioTracks().forEach((track) => track.addEventListener('ended', () => {
+      if (rec.recorder !== activeRecorder || activeRecorder.state === 'inactive') return;
+      const at = fmtTime(elapsed());
+      stopRecording();
+      $('#rec-state').textContent = `Micro bị ngắt lúc ${at}. Phần đã ghi được giữ lại bên dưới.`;
+      toast(`Micro bị ngắt lúc ${at}, bản ghi đã dừng. Phần đã ghi vẫn được giữ.`, true);
+    }));
     rec.recorder.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
     rec.recorder.onstop = finishRecording;
     rec.recorder.start(1000);
@@ -481,7 +490,8 @@
         if (p.submitted.text && $('#manual-transcript').value.trim() === p.submitted.text) $('#manual-transcript').value = '';
       }
       const viewingOther = !!state.current && state.current.id !== id;
-      if ((viewingOther && (!fromRecorder || p.navigated)) || (fromRecorder && busyRecording)) {
+      if (busyRecording || (viewingOther && (!fromRecorder || p.navigated))) {
+        if (state.current && state.current.id === id) renderMeeting(m); // cập nhật nội dung nhưng không chuyển tab
         toast(m.status === 'error' ? `Cuộc họp "${m.title}" xử lý lỗi: ${m.error}` : `Cuộc họp "${m.title}" đã xử lý xong`, m.status === 'error');
         return;
       }
@@ -724,6 +734,11 @@
       $('#learning-msg').textContent = `Đã nhúng lại ${r.updated} mảnh bằng ${r.embedder}.`;
       loadLearning();
     } catch (err) { toast(err.message, true); }
+  });
+
+  // Đóng/tải lại trang khi đang ghi âm hoặc còn bản ghi chưa gửi: hỏi lại để không mất bản ghi
+  window.addEventListener('beforeunload', (e) => {
+    if (rec.recorder || state.blob) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // ----------------------------------------------------------------- init

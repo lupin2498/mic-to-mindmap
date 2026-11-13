@@ -102,7 +102,8 @@ class Glossary:
         hit_ids: list[int] = []
         for row in rows:
             pattern = re.compile(r"(?<!\w)" + re.escape(row["variant"]) + r"(?!\w)", re.IGNORECASE)
-            text, n = pattern.subn(row["term"], text)
+            # hàm thay thế: giữ nguyên văn từ đúng (chuỗi thay thế sẽ hiểu "\\1", "\\g<..>" là mã thoát và ném lỗi)
+            text, n = pattern.subn(lambda _m, term=row["term"]: term, text)
             if n:
                 applied += n
                 hit_ids.append(row["id"])

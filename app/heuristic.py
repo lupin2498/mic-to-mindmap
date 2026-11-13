@@ -5,6 +5,7 @@ import re
 
 from .mindmap import normalize_mindmap
 from .textutil import (
+    CONJUNCTIONS,
     capitalize_first,
     contains_phrase,
     extract_keywords,
@@ -36,6 +37,17 @@ DUE_PATTERNS = [
     r"\b(?:tomorrow|today|next week|this week|end of (?:week|month|day|quarter)|eod|eow|q[1-4])\b",
 ]
 _DUE_RE = re.compile("|".join(DUE_PATTERNS), re.IGNORECASE)
+_OWNER_VERBS = {"sẽ", "cần", "phải", "phụ trách", "đảm nhận", "will", "should", "must", "to"}
+_HONORIFICS = {"anh", "chị", "em", "bạn", "ông", "bà", "cô", "chú", "mr", "ms", "mrs"}
+# Chữ viết hoa đầu câu nhưng không phải tên người
+# Chữ viết hoa đầu câu nhưng không phải tên người: đại từ, từ nối, động từ giao việc.
+# (Không dùng cả STOPWORDS: mạo từ tiếng Anh "an" trùng với tên "An".)
+_NOT_NAMES = CONJUNCTIONS | {
+    "tôi", "tao", "tớ", "mình", "ta", "chúng", "họ", "nó", "ai", "mọi", "đây", "đó", "này", "việc",
+    "i", "we", "you", "they", "he", "she", "it", "who", "everyone", "someone", "this", "that", "there", "the",
+    "cần", "phải", "sẽ", "hãy", "need", "needs", "remember", "please", "try", "want", "wants", "going",
+    "let", "lets", "have", "has",
+}
 
 
 def _dedupe(items: list, key=lambda item: item) -> list:
@@ -65,12 +77,29 @@ def find_owner(sentence: str, participants: list[str]) -> str:
         name = name.strip()
         if name and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", sentence, re.IGNORECASE):
             return name
-    # Tên riêng viết hoa đứng đầu mệnh đề (vd: "An sẽ ...")
-    match = re.match(r"^\s*(?:anh|chị|em|bạn|mr\.?|ms\.?)?\s*([A-ZÀ-Ỹ][\wÀ-ỹ]+(?:\s[A-ZÀ-Ỹ][\wÀ-ỹ]+){0,2})\s+(?:sẽ|cần|phải|phụ trách|đảm nhận|will|should|must|to)\b",
-                     sentence)
-    if match:
-        return match.group(1)
-    return ""
+    # Tên riêng viết hoa đứng ngay trước động từ giao việc ở đầu mệnh đề (vd: "An sẽ ...", "Sau đó Bình sẽ ...")
+    words = sentence.split()
+    verb_at = -1
+    for index, word in enumerate(words[:7]):
+        bare = word.strip(",;:.").lower()
+        if bare in _OWNER_VERBS or (bare in ("phụ", "đảm") and index + 1 < len(words)
+                                    and f"{bare} {words[index + 1].strip(',;:.').lower()}" in _OWNER_VERBS):
+            verb_at = index
+            break
+    if verb_at <= 0:
+        return ""
+    name: list[str] = []
+    for word in reversed(words[:verb_at]):
+        token = word.strip(",;:")
+        # str.isupper thay cho dải ký tự [À-Ỹ]: dải đó chứa cả chữ thường như "đ", "ó"
+        if len(name) >= 3 or len(token) < 2 or not token[0].isupper() or not token.replace(".", "").replace("-", "").isalpha():
+            break
+        name.insert(0, token)
+    honorific = bool(name) and name[0].rstrip(".").lower() in _HONORIFICS
+    core = name[1:] if honorific else name
+    if not core or any(part.lower() in _NOT_NAMES for part in core):
+        return ""
+    return " ".join(name)
 
 
 def extract_decisions(sentences: list[str], limit: int = 6) -> list[str]:

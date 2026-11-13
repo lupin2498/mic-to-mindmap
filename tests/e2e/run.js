@@ -326,6 +326,34 @@ step('ghi-am: micro giả, tạm dừng, dừng, nghe lại, xử lý báo lỗi
   assert(await page.isHidden('#progress') && await page.isHidden('#preview'), 'dọn thanh tiến trình và bản xem trước');
 });
 
+step('ghi-am-mp4: trình duyệt chỉ ghi được audio/mp4 (như iOS) vẫn tải lên và phát lại đúng kiểu', async (ctx) => {
+  const page = ctx.page = await open(null, PHONE);
+  await page.addInitScript(() => {
+    // iOS (WKWebView/Safari) không ghi được webm/ogg, chỉ có audio/mp4
+    const orig = MediaRecorder.isTypeSupported.bind(MediaRecorder);
+    window.__mp4Supported = orig('audio/mp4');
+    MediaRecorder.isTypeSupported = (t) => !/webm|ogg/.test(t) && orig(t);
+  });
+  await page.goto(API + '/');
+  if (!(await page.evaluate(() => window.__mp4Supported))) { ctx.skip = 'Chromium này không ghi được audio/mp4'; return; }
+  await page.fill('#meeting-title', 'Bản ghi mp4');
+  await page.tap('#btn-record');
+  await until(() => page.evaluate(() => document.querySelector('#rec-state').textContent === 'Đang ghi âm…'), 'bắt đầu ghi mp4');
+  await page.waitForTimeout(1500);
+  await page.tap('#btn-stop');
+  await page.waitForSelector('#preview:not([hidden])');
+  const local = await page.evaluate(async () => { const b = await (await fetch(document.querySelector('#audio-preview').src)).blob(); return { size: b.size, type: b.type }; });
+  assert(local.size > 500 && local.type.startsWith('audio/mp4'), `bản ghi là audio/mp4 có dữ liệu (${JSON.stringify(local)})`);
+  await page.tap('#btn-process');
+  await until(async () => { const m = await findMeeting('Bản ghi mp4'); return m && m.has_audio && m.status === 'error'; }, 'bản ghi mp4 được tải lên');
+  const m = await findMeeting('Bản ghi mp4');
+  const audio = await fetch(`${API}/api/meetings/${m.id}/audio`);
+  eq(audio.headers.get('content-type'), 'audio/mp4', 'kiểu nội dung phát lại');
+  const bytes = Buffer.from(await audio.arrayBuffer());
+  eq(bytes.length, local.size, 'kích thước file trên máy chủ');
+  eq(bytes.subarray(4, 8).toString('latin1'), 'ftyp', 'file trên máy chủ là MP4 thật (hộp ftyp)');
+});
+
 step('ghi-am-bam-lap: bấm đúp nút ghi không mở hai luồng micro', async (ctx) => {
   const page = ctx.page = await open(null, DESKTOP);
   await withFakeMic(page);
@@ -344,6 +372,36 @@ step('ghi-am-bam-lap: bấm đúp nút ghi không mở hai luồng micro', async
   await page.waitForTimeout(400);
   eq(await liveTracks(page), 0, 'micro tắt khi tạo cuộc họp mới');
   assert(await page.isHidden('#preview'), 'bản ghi dở bị hủy');
+});
+
+step('ghi-am-ngat: micro bị ngắt giữa chừng thì dừng và giữ phần đã ghi; đóng trang khi còn bản ghi thì hỏi lại', async (ctx) => {
+  const page = ctx.page = await open(null, DESKTOP);
+  await withFakeMic(page);
+  await page.goto(API + '/');
+  // chưa có gì để mất: rời trang không bị hỏi
+  let asked = 0;
+  page.on('dialog', async (d) => { if (d.type() === 'beforeunload') { asked += 1; await d.dismiss(); } else await d.accept(); });
+  await page.click('#btn-record');
+  await until(() => page.evaluate(() => document.querySelector('#rec-state').textContent === 'Đang ghi âm…'), 'bắt đầu ghi');
+  await page.waitForTimeout(1300);
+  // hệ điều hành thu hồi micro (rút tai nghe, app khác chiếm, thu hồi quyền)
+  await page.evaluate(() => window.__streams[0].getAudioTracks()[0].dispatchEvent(new Event('ended')));
+  await page.waitForSelector('#preview:not([hidden])');
+  assert(/Micro bị ngắt lúc 00:0\d/.test(await page.textContent('#rec-state')), 'báo micro bị ngắt kèm thời điểm');
+  assert(await page.isDisabled('#btn-stop') && await page.isDisabled('#btn-pause'), 'giao diện về trạng thái đã dừng');
+  const t = await page.textContent('#rec-timer');
+  await page.waitForTimeout(700);
+  eq(await page.textContent('#rec-timer'), t, 'đồng hồ không chạy tiếp');
+  const size = await page.evaluate(async () => (await (await fetch(document.querySelector('#audio-preview').src)).blob()).size);
+  assert(size > 500, `phần đã ghi được giữ (${size} byte)`);
+  // còn bản ghi chưa gửi: đóng trang phải hỏi lại
+  await page.close({ runBeforeUnload: true });
+  await until(() => asked === 1, 'hộp thoại xác nhận rời trang');
+  assert(!page.isClosed(), 'trang còn mở sau khi người dùng chọn ở lại');
+  await page.click('#btn-discard');
+  await page.close({ runBeforeUnload: true });
+  await until(() => page.isClosed(), 'không còn gì để mất thì đóng trang ngay');
+  eq(asked, 1, 'số lần bị hỏi');
 });
 
 step('phu-de: phụ đề của bản ghi trước không dính vào file tải lên sau', async (ctx) => {
@@ -644,6 +702,7 @@ function serveStatic(dir) {
     env: Object.assign({}, process.env, { M2M_DATA_DIR: dataDir, M2M_DISABLE_WHISPER: '1', M2M_DISABLE_OLLAMA: '1' }),
   });
   let failed = 0;
+  const skipped = [];
   let www;
   try {
     API = `http://127.0.0.1:${port}`;
@@ -664,6 +723,7 @@ function serveStatic(dir) {
       let error = null;
       try {
         await s.fn(ctx);
+        if (ctx.skip) skipped.push(`${slug}: ${ctx.skip}`);
         const errors = (ctx.page ? ctx.page.errors : []).filter((e) => !(s.opts.allow && s.opts.allow.test(e)));
         if (errors.length) throw new Error(`Có lỗi console/trang:\n    ${errors.join('\n    ')}`);
       } catch (err) { error = err; }
@@ -673,7 +733,7 @@ function serveStatic(dir) {
       }
       const ms = Date.now() - started;
       if (error) { failed += 1; console.log(`FAIL ${s.name} (${ms} ms)\n  ${String(error.message).split('\n').join('\n  ')}`); }
-      else console.log(`PASS ${s.name} (${ms} ms)`);
+      else console.log(`${ctx.skip ? 'SKIP' : 'PASS'} ${s.name} (${ms} ms)${ctx.skip ? ` — ${ctx.skip}` : ''}`);
     }
   } catch (err) {
     failed += 1;
@@ -684,6 +744,6 @@ function serveStatic(dir) {
     server.kill('SIGTERM');
     fs.rmSync(dataDir, { recursive: true, force: true });
   }
-  console.log(`\nE2E: ${selected.length - failed}/${selected.length} bước đạt${GREP ? ` (lọc "${GREP}")` : ''}. Ảnh chụp: ${OUT}`);
+  console.log(`\nE2E: ${selected.length - failed - skipped.length}/${selected.length} bước đạt${skipped.length ? `, ${skipped.length} bước BỎ QUA (${skipped.join('; ')})` : ''}${GREP ? ` (lọc "${GREP}")` : ''}. Ảnh chụp: ${OUT}`);
   process.exit(failed ? 1 : 0);
 })();

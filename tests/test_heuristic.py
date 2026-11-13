@@ -66,3 +66,28 @@ def test_repeated_sentences_are_deduplicated():
     assert len(result["summary"]) == len({s.lower() for s in result["summary"]})
     assert len(result["decisions"]) == 1
     assert len(result["action_items"]) == 1
+
+
+def test_owner_is_a_name_not_a_pronoun_or_cue_word():
+    """Bộ dự phòng từng điền "Cần", "We", "Tôi", "Need" vào cột Phụ trách vì coi mọi chữ viết hoa đầu câu là tên."""
+    from app.heuristic import find_owner
+
+    for sentence in ["Cần phải hoàn thành báo cáo trước thứ sáu.", "We will send the report by Friday.",
+                     "Tôi sẽ gửi báo cáo tiến độ.", "Em sẽ chuẩn bị slide.", "Need to follow up with the vendor.",
+                     "They should prepare the deck.", "Chúng ta sẽ họp lại vào tuần sau.", "Mọi người cần đọc tài liệu.",
+                     "Sẽ phải làm lại từ đầu.", "Phải cần thêm hai người."]:
+        assert find_owner(sentence, []) == "", sentence
+    expected = {
+        "An sẽ phụ trách liên hệ khách hàng.": "An",
+        "Anna will contact the key customers.": "Anna",
+        "Chị Lan sẽ gửi hợp đồng.": "Chị Lan",
+        "anh Minh Quang phải gửi báo giá.": "Minh Quang",
+        "Nguyễn Văn An phải gửi báo cáo.": "Nguyễn Văn An",
+        "Sau đó Bình sẽ gửi biên bản.": "Bình",      # "đó" không phải chữ hoa dù nằm trong dải À-Ỹ
+        "Marketing cần chuẩn bị chiến dịch.": "Marketing",
+    }
+    for sentence, owner in expected.items():
+        assert find_owner(sentence, []) == owner, sentence
+    # tên trong danh sách người tham gia vẫn được ưu tiên, khớp nguyên từ
+    assert find_owner("Việc này giao cho chi nhánh, Chi sẽ theo dõi.", ["Chi"]) == "Chi"
+    assert find_owner("Cần chuẩn bị chiến dịch.", ["Chi"]) == ""

@@ -108,3 +108,13 @@ def test_glossary_ignores_rewrites_and_strips_punctuation(glossary):
     assert [(e["variant"], e["term"]) for e in learned] == [("an pha", "Alpha")]
     learned = glossary.learn_from_edit("gặp an pha. Xong", "gặp Alpha, xong")
     assert [(e["variant"], e["term"]) for e in learned] == [("an pha", "Alpha")]
+
+
+def test_glossary_term_with_backslash_does_not_break_apply(glossary):
+    """Từ đúng chứa dấu \\ từng bị hiểu là mã thoát của biểu thức chính quy: re.error làm hỏng mọi lần xử lý cuộc họp."""
+    glossary.add("AT\\T", "a t t")
+    glossary.add("C:\\new\\1", "ổ c mới")
+    glossary.add("\\g<0>x", "nhóm không")
+    text, applied = glossary.apply("công ty a t t lưu ở ổ c mới, mã nhóm không.")
+    assert applied == 3
+    assert text == "công ty AT\\T lưu ở C:\\new\\1, mã \\g<0>x."

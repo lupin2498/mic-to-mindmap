@@ -13,7 +13,7 @@ SEED = 20261113
 PIECES = [
     "họp", "kế hoạch", "ngân sách", "An sẽ", "cần", "chốt", "thống nhất", "trước thứ sáu", "tháng 10", "năm 2026",
     "phòng 301", "500 triệu", "deadline", "will", "agreed", "by Friday", ".", ",", "!", "?", "…", "\n", "\n\n", "\t",
-    " ", "  ", "🙂", "👨‍👩‍👧", "‏", "‮", "﻿", "\x00", "\x07", "а", "е", "null", "NaN", "<b>", "'; --", "%", "_",
+    " ", "  ", "🙂", "👨‍👩‍👧", "‏", "‮", "﻿", "\x00", "\x07", "а", "е", "null", "NaN", "<b>", "'; --", "%", "_", "\\1", "C:\\new", "\\g<0>", "$1", "(", "[a-",
     unicodedata.normalize("NFD", "Nguyễn Thị Hồng"), "ạ" * 3, "A" * 300, "１２３", "١٢٣", "\ud83d".encode("utf-16", "surrogatepass").decode("utf-16", "ignore"),
 ]
 
@@ -100,7 +100,12 @@ def test_fuzz_glossary_learn_and_apply(db):
         for entry in glossary.learn_from_edit(a, b):
             assert entry["term"].strip() and entry["variant"].strip()
             assert entry["term"].lower() != entry["variant"].lower()
-        out, applied = glossary.apply(a)
+        # thuật ngữ người dùng tự thêm: ký tự bất kỳ, kể cả thứ trông như mã thoát của biểu thức chính quy
+        term = (rng.choice(["", "\\1", "a\\Tb", "\\g<9>", "$&"]) + _text(rng, 2))[:120]
+        variant = " ".join(_text(rng, 2).split())[:100] or f"dạng sai {rng.randint(0, 5)}"
+        if " ".join(term.split()):
+            glossary.add(term, variant)
+        out, applied = glossary.apply(f"{a} {variant} {a}")  # văn bản chắc chắn chứa dạng sai vừa thêm
         assert isinstance(out, str) and applied >= 0
     assert glossary.learn_from_edit("giống hệt nhau", "giống hệt nhau") == []
 
