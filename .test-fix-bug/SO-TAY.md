@@ -15,6 +15,7 @@
 - [2026-11-13] Máy chủ bỏ dấu cách hai đầu tiêu đề → khẳng định độ dài trong E2E phải chừa 1 ký tự (bước `gioi-han` từng đỏ vì bài test, 199 so với 200).
 - [2026-11-13] Thư viện client (httpx, fetch của Node) không gửi được chuỗi có surrogate lẻ → muốn thử phải gửi byte JSON thô (`content=b'{"title": "\\ud83d"}'`).
 - [2026-11-13] `tests/fakes.py::FakeOllama.raw_chat_body` gửi nguyên văn thân trả lời của `/api/chat`: dùng khi cần Ollama trả thứ `json.dumps` không tạo ra được.
+- [2026-11-13] `git fetch --depth 1 origin <nhánh đang làm>` (bước tìm sổ tay ở nhánh khác) biến repo cục bộ thành bản nông tại HEAD: `git log d6aa6a5..HEAD` chỉ còn thấy commit mới → bỏ qua nhánh hiện tại khi dò, hoặc chạy `git fetch --unshallow origin <nhánh>` ngay sau đó.
 - [2026-11-13] Lệnh tải kinh nghiệm chung từ repo khác (curl tới raw.githubusercontent.com) bị bộ phân quyền của phiên từ chối → ghi "không nạp được" vào báo cáo, không tìm cách vòng.
 
 ## Bản đồ phủ
