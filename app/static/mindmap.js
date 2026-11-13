@@ -272,7 +272,8 @@
       let scale = Math.min((rect.width - pad * 2) / b.w, (rect.height - pad * 2) / b.h, 1.4);
       if (!isFinite(scale) || scale <= 0) scale = 1;
       // Màn hình hẹp: không thu nhỏ quá mức để chữ còn đọc được, người dùng kéo để xem phần còn lại
-      const minScale = rect.width < 600 ? 0.55 : 0.15;
+      // (tính theo cửa sổ: trên máy tính khung mind map nằm trong cột hẹp nhưng vẫn phải thấy toàn bộ bản đồ)
+      const minScale = window.innerWidth < 600 ? 0.55 : 0.15;
       this.scale = Math.max(minScale, scale);
       this.tx = rect.width / 2 - (b.x + b.w / 2) * this.scale;
       this.ty = rect.height / 2 - (b.y + b.h / 2) * this.scale;
@@ -296,10 +297,11 @@
     }
     _bindEvents() {
       const c = this.container;
-      let dragging = false, last = null, moved = false;
+      let dragging = false, last = null, moved = false, downOnNode = false;
       c.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         dragging = true; moved = false; last = { x: e.clientX, y: e.clientY };
+        downOnNode = !!(e.target.closest && e.target.closest('.mm-node'));
         c.classList.add('dragging');
       });
       window.addEventListener('mousemove', (e) => {
@@ -310,7 +312,9 @@
         this._applyTransform();
       });
       window.addEventListener('mouseup', () => {
-        if (dragging && !moved) this.select(null);
+        // Chỉ bỏ chọn khi nhấp vào nền. Nhấp vào nút mà vẽ lại ngay ở mouseup thì phần tử bị gỡ khỏi DOM
+        // trước khi trình duyệt phát click/dblclick, khiến chuột không chọn và không sửa được nút.
+        if (dragging && !moved && !downOnNode) this.select(null);
         dragging = false; c.classList.remove('dragging');
       });
       c.addEventListener('wheel', (e) => {
@@ -333,6 +337,7 @@
       window.addEventListener('resize', () => { if (this.tree) this.fit(); });
     }
     select(node) {
+      if (this.selected === node) return; // không vẽ lại giữa hai lần nhấp của một cú nhấp đúp
       this.selected = node;
       this.render();
     }

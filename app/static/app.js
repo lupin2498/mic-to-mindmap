@@ -18,11 +18,17 @@
       if (isForm) options.body = body;
       else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
     }
+    if (IS_MOBILE && !API_BASE) {
+      // Chưa có địa chỉ máy chủ: không gửi request tới chính origin của app (chỉ nhận về 404 khó hiểu)
+      throw new Error('Chưa nhập địa chỉ máy chủ AI. Nhập ở ô phía trên rồi nhấn Kết nối.');
+    }
     let resp;
     try {
       resp = await fetch(apiUrl(url), options);
     } catch (err) {
-      throw new Error(IS_MOBILE ? `Không kết nối được máy chủ ${API_BASE || '(chưa cấu hình)'}: ${err.message}` : `Không kết nối được server: ${err.message}`);
+      const error = new Error(IS_MOBILE ? `Không kết nối được máy chủ ${API_BASE}: ${err.message}` : `Không kết nối được server: ${err.message}`);
+      error.network = true;
+      throw error;
     }
     if (resp.status === 204) return null;
     const text = await resp.text();
@@ -30,7 +36,9 @@
     try { data = text ? JSON.parse(text) : null; } catch (_) { data = text; }
     if (!resp.ok) {
       const detail = data && data.detail ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : resp.statusText;
-      throw new Error(detail || `Lỗi ${resp.status}`);
+      const error = new Error(detail || `Lỗi ${resp.status}`);
+      error.status = resp.status;
+      throw error;
     }
     return data;
   }
@@ -46,7 +54,7 @@
   // ---------------------------------------------------------------- state
   const state = {
     meetings: [], current: null, health: null, blob: null, blobExt: 'webm', duration: 0,
-    liveTranscript: '', pollTimer: null, rating: 0, mindmap: null,
+    liveTranscript: '', rating: 0, mindmap: null,
   };
 
   // ---------------------------------------------------------------- utils
@@ -58,6 +66,10 @@
     node.hidden = false;
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { node.hidden = true; }, isError ? 6000 : 3200);
+  }
+  // Mọi dữ liệu từ máy chủ (tên model, góp ý, ngày giờ...) phải qua esc() trước khi ghép vào innerHTML
+  function esc(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   }
   function fmtTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -138,29 +150,43 @@
   }
 
   // ------------------------------------------------------------- meetings
+  let listSeq = 0;
   async function loadMeetings() {
     const q = $('#search-meetings').value.trim();
-    state.meetings = await api.get(`/api/meetings${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+    const seq = ++listSeq;
+    const meetings = await api.get(`/api/meetings${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+    if (seq !== listSeq) return; // đã có lần tải mới hơn: bỏ kết quả cũ về muộn
+    state.meetings = meetings;
     const list = $('#meeting-list');
     list.innerHTML = '';
     if (!state.meetings.length) {
-      list.innerHTML = '<li class="muted small" style="cursor:default">Chưa có cuộc họp nào.</li>';
+      list.innerHTML = `<li class="muted small" style="cursor:default">${q ? 'Không tìm thấy cuộc họp nào khớp.' : 'Chưa có cuộc họp nào.'}</li>`;
       return;
     }
     for (const m of state.meetings) {
       const li = document.createElement('li');
       li.className = state.current && state.current.id === m.id ? 'active' : '';
-      li.innerHTML = `<span class="title"></span><span class="sub"><span>${fmtDate(m.created_at)}</span><span class="status-pill ${statusClass(m.status)}">${statusLabel(m.status)}</span></span>`;
+      li.tabIndex = 0;
+      li.setAttribute('role', 'button');
+      li.innerHTML = `<span class="title"></span><span class="sub"><span>${esc(fmtDate(m.created_at))}</span><span class="status-pill ${statusClass(m.status)}">${esc(statusLabel(m.status))}</span></span>`;
       li.querySelector('.title').textContent = m.title;
       li.addEventListener('click', () => openMeeting(m.id));
+      li.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMeeting(m.id); }
+      });
       list.appendChild(li);
     }
   }
   $('#search-meetings').addEventListener('input', () => loadMeetings().catch(() => {}));
 
+  let openSeq = 0;
   async function openMeeting(id) {
+    const seq = ++openSeq;
+    // Người dùng chủ động mở cuộc họp khác: bản ghi đang xử lý xong sau đó chỉ báo, không kéo họ đi
+    pollers.forEach((p, pid) => { if (pid !== id) p.navigated = true; });
     try {
       const m = await api.get(`/api/meetings/${id}`);
+      if (seq !== openSeq) return; // bấm nhanh nhiều cuộc họp: chỉ hiện cuộc họp bấm sau cùng
       renderMeeting(m);
       showTab('result');
       loadMeetings();
@@ -170,6 +196,7 @@
 
   $('#btn-new-meeting').addEventListener('click', () => {
     state.current = null;
+    openSeq += 1; // hủy lần mở cuộc họp còn đang chờ trả lời
     if (rec.recorder) cancelRecording();
     discardRecording();
     $('#meeting-title').value = '';
@@ -181,7 +208,12 @@
 
   // ------------------------------------------------------------ recording
   const rec = { recorder: null, stream: null, chunks: [], ctx: null, analyser: null, raf: null, timer: null,
-    startedAt: 0, accumulated: 0, paused: false, recognition: null, mime: '', discard: false };
+    startedAt: 0, accumulated: 0, paused: false, recognition: null, mime: '', discard: false, starting: false };
+  function setRecordLabel(recording) {
+    const label = recording ? 'Dừng ghi âm' : 'Bắt đầu ghi âm';
+    $('#btn-record').title = label;
+    $('#btn-record').setAttribute('aria-label', label);
+  }
 
   function pickMime() {
     const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'];
@@ -251,12 +283,20 @@
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       toast('Trình duyệt không hỗ trợ ghi âm (cần HTTPS hoặc localhost)', true); return;
     }
+    // Bấm lặp khi hộp thoại xin quyền chưa trả lời: không mở luồng micro thứ hai (luồng đầu sẽ không bao giờ tắt)
+    if (rec.starting || rec.recorder) return;
+    rec.starting = true;
     try {
       rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-    } catch (err) { toast(`Không truy cập được micro: ${err.message}`, true); return; }
+    } catch (err) { toast(`Không truy cập được micro: ${err.message}`, true); return; } finally { rec.starting = false; }
     rec.mime = pickMime();
     rec.chunks = [];
-    rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined);
+    try {
+      rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined);
+    } catch (err) {
+      rec.stream.getTracks().forEach((t) => t.stop());
+      toast(`Trình duyệt không ghi âm được: ${err.message}`, true); return;
+    }
     rec.recorder.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
     rec.recorder.onstop = finishRecording;
     rec.recorder.start(1000);
@@ -270,6 +310,7 @@
     rec.timer = setInterval(() => { $('#rec-timer').textContent = fmtTime(elapsed()); }, 250);
     if ($('#live-captions').checked) startRecognition();
     $('#btn-record').classList.add('recording');
+    setRecordLabel(true);
     $('#btn-pause').disabled = false; $('#btn-stop').disabled = false;
     $('#rec-state').textContent = 'Đang ghi âm…';
     $('#preview').hidden = true;
@@ -297,6 +338,7 @@
     cancelAnimationFrame(rec.raf); clearInterval(rec.timer);
     if (rec.ctx) { rec.ctx.close().catch(() => {}); rec.ctx = null; }
     $('#btn-record').classList.remove('recording', 'paused');
+    setRecordLabel(false);
     $('#btn-pause').disabled = true; $('#btn-stop').disabled = true; $('#btn-pause').textContent = '⏸ Tạm dừng';
     $('#rec-state').textContent = 'Đã dừng. Nghe lại bên dưới rồi nhấn "Xử lý bằng AI".';
   }
@@ -336,6 +378,9 @@
     const file = e.target.files[0];
     if (!file) return;
     const ext = (file.name.split('.').pop() || 'webm').toLowerCase();
+    // Phụ đề trực tiếp thuộc về bản ghi micro trước đó, không phải file này
+    state.liveTranscript = '';
+    $('#live-transcript').hidden = true; $('#live-transcript').textContent = '';
     setBlob(file, ext, 0);
     $('#rec-state').textContent = `Đã chọn file: ${file.name}`;
     if (!$('#meeting-title').value) $('#meeting-title').value = file.name.replace(/\.[^.]+$/, '');
@@ -357,19 +402,20 @@
   }
   async function processRecording() {
     if (!state.blob) { toast('Chưa có bản ghi âm', true); return; }
+    const blob = state.blob;
     try {
       setProgress('Đang tạo cuộc họp…');
       const meeting = await api.post('/api/meetings', meetingPayload());
       setProgress('Đang tải âm thanh lên…');
       const form = new FormData();
-      form.append('audio', state.blob, `recording.${state.blobExt}`);
+      form.append('audio', blob, `recording.${state.blobExt}`);
       if (state.duration) form.append('duration_sec', String(state.duration));
       if (state.liveTranscript.trim()) form.append('live_transcript', state.liveTranscript.trim());
       await api.upload(`/api/meetings/${meeting.id}/audio`, form);
       await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: true });
       setProgress('Đang xử lý…');
       await loadMeetings();
-      startPolling(meeting.id, true);
+      startPolling(meeting.id, { blob });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
   async function analyzeText() {
@@ -382,37 +428,71 @@
       await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: false });
       setProgress('Đang tóm tắt…');
       await loadMeetings();
-      startPolling(meeting.id, true);
+      startPolling(meeting.id, { text });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
   $('#btn-process').addEventListener('click', processRecording);
   $('#btn-analyze-text').addEventListener('click', analyzeText);
 
-  function startPolling(id, fromRecorder) {
-    clearInterval(state.pollTimer);
+  // Mỗi cuộc họp đang xử lý có một bộ hỏi trạng thái riêng: mở/phân tích lại cuộc họp khác không làm
+  // bộ của bản ghi vừa gửi bị hủy (thanh tiến trình kẹt mãi).
+  const pollers = new Map();
+  const MAX_POLL_FAILURES = 20; // ~30 giây mất mạng liên tục mới bỏ cuộc
+  function stopPolling(id) {
+    const p = pollers.get(id);
+    if (p) { clearInterval(p.timer); pollers.delete(id); }
+  }
+  /* submitted: thứ người dùng vừa gửi đi từ tab Ghi âm ({blob} hoặc {text}); bỏ trống khi phân tích lại. */
+  function startPolling(id, submitted) {
+    const prev = pollers.get(id);
+    stopPolling(id);
+    const p = { submitted: submitted || (prev && prev.submitted) || null, busy: false, failures: 0, navigated: false, timer: null };
+    const fromRecorder = !!p.submitted;
     const tick = async () => {
+      if (p.busy || pollers.get(id) !== p) return;
+      p.busy = true;
       let m;
-      try { m = await api.get(`/api/meetings/${id}`); } catch (err) { clearInterval(state.pollTimer); setProgress(''); toast(err.message, true); return; }
-      const working = ['queued', 'transcribing', 'analyzing'].includes(m.status) || m.processing;
-      if (fromRecorder) setProgress(working ? `${statusLabel(m.status)}…` : '');
-      if (state.current && state.current.id === id) renderStatus(m);
-      if (!working) {
-        clearInterval(state.pollTimer);
-        state.pollTimer = null;
-        loadMeetings();
-        if (fromRecorder) { discardRecording(); $('#manual-transcript').value = ''; }
-        if (!fromRecorder && state.current && state.current.id !== id) {
-          toast(m.status === 'error' ? `Cuộc họp "${m.title}" xử lý lỗi: ${m.error}` : `Cuộc họp "${m.title}" đã xử lý xong`, m.status === 'error');
-          return;
-        }
-        renderMeeting(m);
-        showTab('result');
-        if (m.status === 'error') toast(`Xử lý lỗi: ${m.error}`, true);
-        else toast(`Xong! Engine: ${m.engine || (m.analysis && m.analysis.engine) || ''}`);
+      try {
+        m = await api.get(`/api/meetings/${id}`);
+      } catch (err) {
+        p.busy = false;
+        if (pollers.get(id) !== p) return;
+        // Mất mạng thoáng qua: thử lại ở nhịp sau. Lỗi HTTP (vd: cuộc họp đã bị xóa) hay mất mạng kéo dài: dừng và báo.
+        if (err.network && ++p.failures <= MAX_POLL_FAILURES) return;
+        stopPolling(id);
+        if (fromRecorder) setProgress('');
+        toast(err.message, true);
+        return;
       }
+      p.busy = false; p.failures = 0;
+      if (pollers.get(id) !== p) return;
+      const working = ['queued', 'transcribing', 'analyzing'].includes(m.status) || m.processing;
+      if (fromRecorder && working) setProgress(`${statusLabel(m.status)}…`);
+      if (state.current && state.current.id === id) renderStatus(m);
+      if (working) return;
+      stopPolling(id);
+      loadMeetings().catch(() => {});
+      // Người dùng đang ghi âm hoặc có bản ghi mới chưa gửi: không đụng tới, không kéo họ đi
+      const busyRecording = !!rec.recorder || rec.starting || (!!state.blob && !(p.submitted && p.submitted.blob === state.blob));
+      if (fromRecorder) {
+        setProgress('');
+        // Chỉ dọn đúng thứ đã gửi đi; bản ghi/ghi chú người dùng làm thêm trong lúc chờ phải còn nguyên
+        if (p.submitted.blob && state.blob === p.submitted.blob && !rec.recorder) discardRecording();
+        if (p.submitted.text && $('#manual-transcript').value.trim() === p.submitted.text) $('#manual-transcript').value = '';
+      }
+      const viewingOther = !!state.current && state.current.id !== id;
+      if ((viewingOther && (!fromRecorder || p.navigated)) || (fromRecorder && busyRecording)) {
+        toast(m.status === 'error' ? `Cuộc họp "${m.title}" xử lý lỗi: ${m.error}` : `Cuộc họp "${m.title}" đã xử lý xong`, m.status === 'error');
+        return;
+      }
+      renderMeeting(m);
+      showTab('result');
+      if (m.status === 'error') toast(`Xử lý lỗi: ${m.error}`, true);
+      else toast(`Xong! Engine: ${m.engine || (m.analysis && m.analysis.engine) || ''}`);
     };
+    p.timer = setInterval(tick, 1500);
+    pollers.set(id, p);
     tick();
-    state.pollTimer = setInterval(tick, 1500);
   }
 
   // --------------------------------------------------------------- result
@@ -426,7 +506,7 @@
   }
   function actionRow(item) {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><input type="text" class="a-task"></td><td><input type="text" class="a-owner"></td><td><input type="text" class="a-due"></td><td><button class="icon-btn" title="Xóa">✕</button></td>';
+    tr.innerHTML = '<td><input type="text" class="a-task" aria-label="Việc cần làm"></td><td><input type="text" class="a-owner" aria-label="Người phụ trách"></td><td><input type="text" class="a-due" aria-label="Hạn"></td><td><button class="icon-btn" title="Xóa việc này" aria-label="Xóa việc này">✕</button></td>';
     tr.querySelector('.a-task').value = item.task || '';
     tr.querySelector('.a-owner').value = item.owner || '';
     tr.querySelector('.a-due').value = item.due || '';
@@ -488,6 +568,7 @@
   });
   $('#result-title').addEventListener('change', async () => {
     if (!state.current) return;
+    if (!$('#result-title').value.trim()) { $('#result-title').value = state.current.title; return; } // tiêu đề trống: giữ tên cũ
     try {
       const m = await api.patch(`/api/meetings/${state.current.id}`, { title: $('#result-title').value });
       state.current.title = m.title; loadMeetings();
@@ -517,6 +598,7 @@
     if (!state.current || !confirm(`Xóa cuộc họp "${state.current.title}"? Trí nhớ liên quan cũng bị xóa.`)) return;
     try {
       await api.del(`/api/meetings/${state.current.id}`);
+      stopPolling(state.current.id);
       state.current = null;
       $('#result-body').hidden = true; $('#result-empty').hidden = false;
       await loadMeetings();
@@ -555,7 +637,7 @@
 
   // ------------------------------------------------------------- learning
   function statCard(value, label) {
-    return `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div></div>`;
+    return `<div class="stat"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`;
   }
   async function loadLearning() {
     try {
@@ -574,20 +656,20 @@
       const h = state.health || await api.get('/api/health');
       const hints = [];
       if (!h.whisper.available) hints.push('<div class="hint">🎧 <b>Chưa có nhận dạng giọng nói offline.</b> Cài: <code>pip install faster-whisper</code> rồi khởi động lại. Model được tải lần đầu (WHISPER_MODEL=small ≈ 500MB). Tạm thời bạn có thể bật "Phụ đề trực tiếp" khi ghi âm hoặc dán transcript thủ công.</div>');
-      if (!h.ollama.available) hints.push(`<div class="hint">🤖 <b>Chưa kết nối được Ollama</b> (${h.ollama.url}) nên đang dùng tóm tắt heuristic. Cài Ollama tại <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>, rồi chạy <code>ollama pull ${h.ollama.model}</code> và <code>ollama pull ${h.ollama.embed_model}</code>.</div>`);
+      if (!h.ollama.available) hints.push(`<div class="hint">🤖 <b>Chưa kết nối được Ollama</b> (${esc(h.ollama.url)}) nên đang dùng tóm tắt heuristic. Cài Ollama tại <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>, rồi chạy <code>ollama pull ${esc(h.ollama.model)}</code> và <code>ollama pull ${esc(h.ollama.embed_model)}</code>.</div>`);
       else {
-        if (!h.ollama.model_ready) hints.push(`<div class="hint">🤖 Ollama đang chạy nhưng thiếu model LLM. Chạy: <code>ollama pull ${h.ollama.model}</code> (hoặc đổi OLLAMA_MODEL sang một model đã có: ${h.ollama.models.join(', ') || 'chưa có'}).</div>`);
-        if (!h.ollama.embed_ready) hints.push(`<div class="hint">🧠 Thiếu model nhúng để tìm trí nhớ theo ngữ nghĩa. Chạy: <code>ollama pull ${h.ollama.embed_model}</code> rồi nhấn "Nhúng lại trí nhớ".</div>`);
+        if (!h.ollama.model_ready) hints.push(`<div class="hint">🤖 Ollama đang chạy nhưng thiếu model LLM. Chạy: <code>ollama pull ${esc(h.ollama.model)}</code> (hoặc đổi OLLAMA_MODEL sang một model đã có: ${esc(h.ollama.models.join(', ') || 'chưa có')}).</div>`);
+        if (!h.ollama.embed_ready) hints.push(`<div class="hint">🧠 Thiếu model nhúng để tìm trí nhớ theo ngữ nghĩa. Chạy: <code>ollama pull ${esc(h.ollama.embed_model)}</code> rồi nhấn "Nhúng lại trí nhớ".</div>`);
       }
-      const styleHints = (stats.style_hints || []).map((s) => `<li>${s}</li>`).join('');
-      $('#ai-setup').innerHTML = `<p>Engine tóm tắt hiện tại: <b>${stats.engine}</b> · Nhúng: <b>${stats.memory.embedder}</b></p>` +
+      const styleHints = (stats.style_hints || []).map((s) => `<li>${esc(s)}</li>`).join('');
+      $('#ai-setup').innerHTML = `<p>Engine tóm tắt hiện tại: <b>${esc(stats.engine)}</b> · Nhúng: <b>${esc(stats.memory.embedder)}</b></p>` +
         (styleHints ? `<p>Phong cách đã học từ bạn:</p><ul>${styleHints}</ul>` : '') + hints.join('');
       const tbody = $('#glossary-table tbody');
       tbody.innerHTML = '';
       if (!glossary.length) tbody.innerHTML = '<tr><td colspan="6" class="muted">Chưa có thuật ngữ nào.</td></tr>';
       for (const g of glossary) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td></td><td></td><td>${g.source === 'user' ? 'bạn thêm' : 'AI suy ra'}</td><td>${g.count} (dùng ${g.hits})</td><td>${g.active ? '✅' : '⏳'}</td><td><button class="icon-btn" title="Xóa">✕</button></td>`;
+        tr.innerHTML = `<td></td><td></td><td>${g.source === 'user' ? 'bạn thêm' : 'AI suy ra'}</td><td>${esc(g.count)} (dùng ${esc(g.hits)})</td><td>${g.active ? '✅' : '⏳'}</td><td><button class="icon-btn" title="Xóa thuật ngữ" aria-label="Xóa thuật ngữ">✕</button></td>`;
         tr.children[0].textContent = g.term;
         tr.children[1].textContent = g.variant || '—';
         tr.querySelector('button').addEventListener('click', async () => {
@@ -599,7 +681,7 @@
       ul.innerHTML = events.length ? '' : '<li class="muted">Chưa có gì được học. Hãy xử lý một cuộc họp và sửa kết quả!</li>';
       for (const e of events) {
         const li = document.createElement('li');
-        li.innerHTML = `<time>${fmtDate(e.created_at)}</time><span class="kind ${e.kind}">${e.kind}</span><span></span>`;
+        li.innerHTML = `<time>${esc(fmtDate(e.created_at))}</time><span class="kind ${esc(e.kind)}">${esc(e.kind)}</span><span></span>`;
         li.children[2].textContent = e.detail;
         ul.appendChild(li);
       }
@@ -627,7 +709,7 @@
       for (const s of r.sources) {
         const li = document.createElement('li');
         const p = s.payload || {};
-        li.innerHTML = `<span class="src-title"></span> <span class="muted">(${(p.date || '').slice(0, 10)}, độ liên quan ${Math.round(s.score * 100)}%)</span><br><span class="muted"></span>`;
+        li.innerHTML = `<span class="src-title"></span> <span class="muted">(${esc((p.date || '').slice(0, 10))}, độ liên quan ${Math.round(s.score * 100)}%)</span><br><span class="muted"></span>`;
         li.querySelector('.src-title').textContent = p.title || s.kind;
         li.querySelectorAll('.muted')[1].textContent = s.text.slice(0, 220) + (s.text.length > 220 ? '…' : '');
         li.querySelector('.src-title').style.cursor = 'pointer';
