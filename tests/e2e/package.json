@@ -1,0 +1,11 @@
+{
+  "name": "mic-to-mindmap-e2e",
+  "private": true,
+  "description": "Kiểm thử giao diện bằng Playwright. Phiên bản được ghim theo bản đã kiểm chứng.",
+  "scripts": {
+    "test": "node run.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

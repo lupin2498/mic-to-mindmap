@@ -95,7 +95,17 @@ API chính: `POST /api/meetings`, `POST /api/meetings/{id}/audio`, `POST /api/me
 
 ```bash
 pip install -r requirements-dev.txt
-pytest
+python3 -m pytest -q                       # backend: API, pipeline, học hỏi, tương tranh, tải file, fuzz, cấu hình di động
+
+cd tests/e2e && npm install && npx playwright install chromium && cd ../..
+node tests/e2e/run.js                      # giao diện thật bằng Playwright (máy tính, 390px, mobile/www khác origin)
+node tests/e2e/run.js --grep mindmap       # chỉ chạy các bước có tên chứa "mindmap"
+E2E_OUT=/tmp/e2e node tests/e2e/run.js     # chọn nơi lưu ảnh chụp từng bước và log máy chủ
 ```
 
-Bộ test chạy không cần Ollama/Whisper (dùng heuristic và bộ nhúng hashing).
+Bộ test chạy không cần Ollama/Whisper thật:
+
+- `tests/fakes.py` có Ollama giả chạy qua HTTP (`/api/tags`, `/api/chat`, `/api/embed`, `/api/embeddings`) và Whisper giả, bám sát hợp đồng thật để kiểm JSON hỏng, timeout, thiếu model, đổi model nhúng.
+- `tests/e2e/run.js` tự bật máy chủ trên thư mục dữ liệu tạm, dùng micro giả của Chromium, in `PASS`/`FAIL` từng bước và thoát mã khác 0 khi có bước đỏ.
+- GitHub Actions: workflow **Tests (pytest + Playwright)** chạy cả hai bộ ở mỗi lần push đụng tới `app/` hoặc `tests/`; workflow **Mobile build** dựng APK/IPA. Xem kết quả ở tab Actions của repo.
+- Báo cáo đợt kiểm thử gần nhất: [`TEST_REPORT.md`](TEST_REPORT.md).
