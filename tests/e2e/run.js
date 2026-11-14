@@ -11,6 +11,7 @@
 'use strict';
 const { spawn, execFileSync } = require('child_process');
 const fs = require('fs');
+const nodeCrypto = require('crypto');
 const http = require('http');
 const net = require('net');
 const os = require('os');
@@ -81,8 +82,13 @@ async function findMeeting(title) {
 function fakeWebSpeech(auto) {
   window.__sr = { starts: 0, stops: 0, active: null, auto: auto || [], lang: '', continuous: null, failStart: false };
   class FakeSR {
-    start() {
+    start(track) {
+      // như Chrome 133+: đối số không phải MediaStreamTrack thì ném TypeError ngay, không mở gì cả
+      if (arguments.length && track !== undefined && !(track instanceof MediaStreamTrack)) {
+        throw new TypeError("Failed to execute 'start' on 'SpeechRecognition': parameter 1 is not of type 'MediaStreamTrack'.");
+      }
       if (window.__sr.failStart) throw new Error('InvalidStateError');
+      window.__sr.track = track ? { kind: track.kind, readyState: track.readyState } : null;
       window.__sr.starts += 1; window.__sr.active = this; window.__sr.lang = this.lang; window.__sr.continuous = this.continuous;
       setTimeout(() => { if (this.onstart) this.onstart(); for (const text of window.__sr.auto) this._final(text); }, 20);
     }
@@ -131,7 +137,50 @@ function fakeNativeSpeech() {
       return Promise.resolve();
     },
     keepAwake(options) { native.calls.push(['keepAwake', options]); native.awake = options.on; return Promise.resolve(); },
+    // nhận dạng từ file ghi âm có sẵn
+    fileSupport() { return Promise.resolve(native.fileSupport || { available: true, onDevice: true }); },
+    fileBegin(options) {
+      native.calls.push(['fileBegin', { name: options.name, size: options.size }]);
+      const id = `f${++native.fileSeq}`;
+      native.files[id] = [];
+      return Promise.resolve({ id });
+    },
+    fileChunk(options) {
+      native.calls.push(['fileChunk', { id: options.id, length: options.data.length }]);
+      if (!native.files[options.id]) return Promise.reject(Object.assign(new Error('Không tìm thấy file tạm'), { code: 'unknown' }));
+      native.files[options.id].push(options.data);
+      return Promise.resolve();
+    },
+    fileTranscribe(options) {
+      native.calls.push(['fileTranscribe', options]);
+      if (native.fileError) return Promise.reject(Object.assign(new Error(native.fileError.message || 'lỗi'), { code: native.fileError.code }));
+      return new Promise((resolve, reject) => { native.job = { id: options.id, resolve, reject }; });
+    },
+    fileCancel(options) {
+      native.calls.push(['fileCancel', options]);
+      if (native.job && native.job.id === options.id) {
+        const job = native.job;
+        native.job = null;
+        job.reject(Object.assign(new Error('Đã hủy'), { code: 'cancelled' }));
+      }
+      delete native.files[options.id];
+      return Promise.resolve();
+    },
   } } };
+  native.files = {}; native.fileSeq = 0; native.job = null; native.fileError = null; native.fileSupport = null;
+  /* Ghép lại các khúc plugin đã nhận: độ dài và SHA-256, để so với file gốc. */
+  window.__nativeFileBytes = async (id) => {
+    const binary = (native.files[id] || []).map((b64) => atob(b64)).join('');
+    const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    return { length: bytes.length, sha: Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('') };
+  };
+  window.__nativeFileDone = (text) => { const job = native.job; native.job = null; job.resolve({ text, duration: 754.5 }); };
+  window.__nativeFileFail = (code, message) => {
+    const job = native.job;
+    native.job = null;
+    job.reject(Object.assign(new Error(message || code), { code }));
+  };
 }
 const SPEECH = { web: fakeWebSpeech, none: noWebSpeech, native: fakeNativeSpeech };
 
@@ -654,14 +703,72 @@ step('phu-de: văn bản của bản ghi trước không dính vào file tải l
   await page.waitForSelector('#preview:not([hidden])');
   await page.setInputFiles('#audio-file', { name: 'họp tuần 45.mp3', mimeType: 'audio/mpeg', buffer: Buffer.from('ID3-fake-mp3-data') });
   eq(await page.inputValue('#meeting-title'), 'họp tuần 45', 'tiêu đề lấy từ tên file');
+  // file hỏng: trình duyệt không đọc được nên không chuyển thành văn bản được, nói rõ và vẫn giữ file để lưu/nghe
+  await until(async () => /Không đọc được file âm thanh/.test(await recState(page)), 'báo không đọc được file');
   assert(await page.isHidden('#live-transcript'), 'ẩn văn bản của bản ghi trước khi chọn file khác');
-  assert(/chỉ lưu lại để nghe/.test(await page.textContent('#file-note')), 'nói rõ file có sẵn không tự chuyển thành văn bản khi chưa có Whisper');
+  assert(await page.isHidden('#file-progress') && await page.isEnabled('#btn-record'), 'xong thì tắt tiến trình, bật lại nút ghi');
+  assert(await page.isVisible('#preview'), 'vẫn giữ file để tải lên nghe lại');
   await page.click('#btn-process');
   await until(async () => { const m = await findMeeting('họp tuần 45'); return m && ['error', 'done'].includes(m.status); }, 'file tải lên được xử lý xong');
   const m = await findMeeting('họp tuần 45');
   const full = (await api('GET', `/api/meetings/${m.id}`)).data;
   eq(full.transcript || '', '', 'văn bản của file tải lên (không được là văn bản của bản ghi trước)');
   eq(full.status, 'error', 'không có Whisper và không có văn bản thì phải báo lỗi, không tóm tắt nội dung của bản ghi khác');
+});
+
+/* File WAV thật (16 kHz một kênh, tiếng ù nhỏ) để trình duyệt phát được. */
+function wavBuffer(seconds) {
+  const rate = 16000;
+  const samples = Math.round(rate * seconds);
+  const buffer = Buffer.alloc(44 + samples * 2);
+  buffer.write('RIFF', 0); buffer.writeUInt32LE(36 + samples * 2, 4); buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12); buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(rate, 24); buffer.writeUInt32LE(rate * 2, 28); buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36); buffer.writeUInt32LE(samples * 2, 40);
+  for (let i = 0; i < samples; i++) buffer.writeInt16LE(Math.round(800 * Math.sin(2 * Math.PI * 220 * i / rate)), 44 + i * 2);
+  return buffer;
+}
+
+step('nhap-file: nhập bản ghi âm có sẵn → trình duyệt nghe file, chuyển thành văn bản → tự tóm tắt; không mở micro', async (ctx) => {
+  const page = ctx.page = await open(null, DESKTOP);
+  await withFakeMic(page);
+  await page.goto(API + '/');
+  await page.fill('#meeting-participants', 'An, Bình');
+  await until(() => page.evaluate(() => /Trình duyệt nghe file/.test(document.querySelector('#file-note').textContent)), 'giải thích cách chuyển file');
+  await page.setInputFiles('#audio-file', { name: 'Recording 12.wav', mimeType: 'audio/wav', buffer: wavBuffer(2.5) });
+  await until(() => page.evaluate(() => !!(window.__sr.active && window.__sr.track)), 'bộ nhận dạng nghe luồng âm thanh của file');
+  eq(await page.evaluate(() => window.__sr.track), { kind: 'audio', readyState: 'live' }, 'nhận dạng từ track âm thanh, không phải micro');
+  eq(await page.evaluate(() => window.__sr.lang), 'vi-VN', 'ngôn ngữ nhận dạng');
+  assert(await page.isVisible('#file-progress') && await page.isVisible('#btn-file-cancel'), 'hiện tiến trình và nút hủy');
+  assert(await page.isDisabled('#btn-record'), 'không cho ghi âm trong lúc đang chuyển file');
+  assert(await page.evaluate(() => document.querySelector('#file-pick').classList.contains('disabled')), 'không cho nhập file thứ hai cùng lúc');
+  for (const sentence of SPOKEN.slice(0, 5)) await say(page, sentence);
+  assert((await page.textContent('#live-transcript')).startsWith('Hôm nay chúng ta họp về kế hoạch ra mắt sản phẩm mới.'), 'văn bản hiện dần');
+  assert(/\d+ từ/.test(await page.textContent('#file-progress-text')), 'tiến trình đếm số từ');
+  // file phát hết thì tự dừng, tự tóm tắt và vẽ sơ đồ tư duy
+  await until(() => page.evaluate(() => document.querySelector('#tab-result').classList.contains('active')
+    && document.querySelector('#result-title').value === 'Kế hoạch ra mắt sản phẩm mới' && document.querySelector('#result-status').hidden), 'tự tóm tắt sau khi chuyển xong', 20000);
+  const m = await findMeeting('Kế hoạch ra mắt sản phẩm mới');
+  const full = (await api('GET', `/api/meetings/${m.id}`)).data;
+  eq(full.transcript_source, 'file', 'nguồn văn bản');
+  assert(full.has_audio && full.duration_sec > 2 && full.duration_sec < 3, `lưu file để nghe lại, đúng thời lượng (${full.duration_sec})`);
+  assert(full.transcript.includes('An sẽ phụ trách liên hệ khách hàng lớn trước thứ sáu.'), 'văn bản đủ các câu');
+  eq(await page.textContent('#transcript-source'), '(nhận dạng từ file ghi âm)', 'ghi rõ văn bản lấy từ file');
+  assert((await page.locator('#mindmap .mm-node').count()) >= 4, 'có sơ đồ tư duy');
+  eq(await page.evaluate(() => window.__streams.length), 0, 'không mở micro');
+  assert(await page.isEnabled('#btn-record'), 'xong thì bật lại nút ghi');
+  // hủy giữa chừng: không tạo cuộc họp, giao diện trở lại như cũ
+  await page.click('.tab[data-tab="record"]');
+  const before = ((await api('GET', '/api/meetings')).data || []).length;
+  await page.setInputFiles('#audio-file', { name: 'Họp hủy.wav', mimeType: 'audio/wav', buffer: wavBuffer(4) });
+  await until(() => page.evaluate(() => !!(window.__sr.active && window.__sr.track)), 'đang nghe file thứ hai');
+  await say(page, 'câu này sẽ bị hủy');
+  await page.click('#btn-file-cancel');
+  await until(async () => /Đã hủy/.test(await recState(page)), 'báo đã hủy');
+  assert(await page.isHidden('#file-progress') && await page.isHidden('#live-transcript') && await page.isHidden('#preview'), 'dọn giao diện');
+  assert(await page.isEnabled('#btn-record'), 'bật lại nút ghi');
+  await new Promise((r) => setTimeout(r, 4500));   // quá thời lượng file: không có gì tự chạy tiếp
+  eq(((await api('GET', '/api/meetings')).data || []).length, before, 'hủy thì không tạo cuộc họp');
 });
 
 step('nen-xong-muon: bản ghi mới không bị xóa khi cuộc họp trước xử lý xong', async (ctx) => {
@@ -952,7 +1059,10 @@ step('doc-lap-khoi-dong: bản đóng gói tự chạy trên máy, không cần 
   assert((await page.textContent('#meeting-list')).includes('Chưa có cuộc họp nào'), 'danh sách rỗng, không còn bắt nhập địa chỉ máy chủ');
   assert(await page.isVisible('#server-box') && !(await page.evaluate(() => document.querySelector('#server-box').open)), 'mục máy chủ AI có sẵn nhưng đóng, không chắn đường');
   assert((await page.textContent('#server-summary')).includes('đang chạy độc lập'), 'cho biết đang chạy độc lập');
-  assert(await page.isHidden('#file-row') && await page.isHidden('#live-captions-row'), 'ẩn các lựa chọn chỉ dùng được khi có máy chủ');
+  assert(await page.isHidden('#live-captions-row'), 'ẩn lựa chọn chỉ có nghĩa khi có máy chủ');
+  // nhập bản ghi âm có sẵn: điện thoại tự chuyển thành văn bản bằng bộ nhận dạng của máy
+  await until(() => page.evaluate(() => /ngay trên điện thoại/.test(document.querySelector('#file-note').textContent)), 'giải thích cách nhập file');
+  assert(await page.isVisible('#file-pick'), 'có nút nhập bản ghi âm có sẵn');
   assert(/ngay khi bạn nói.*không lưu kèm file âm thanh/.test(await page.textContent('#stt-line')), 'dòng giải thích cách nhận dạng trên điện thoại');
   assert(await noOverflow(page), 'tab ghi âm không tràn ngang');
   await page.tap('.tab[data-tab="learning"]');
@@ -1187,6 +1297,78 @@ step('doc-lap-luu-tam: trình duyệt chặn bộ nhớ thì vẫn chạy đư�
   }
 });
 
+step('doc-lap-nhap-file: điện thoại nhập bản ghi âm có sẵn → bộ nhận dạng của máy chuyển thành văn bản → tóm tắt, lưu cả file', async (ctx) => {
+  const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
+  await until(() => page.evaluate(() => /ngay trên điện thoại/.test(document.querySelector('#file-note').textContent)), 'giải thích cách chuyển file');
+  const bytes = nodeCrypto.randomBytes(1300000);
+  const sha = nodeCrypto.createHash('sha256').update(bytes).digest('hex');
+  await page.setInputFiles('#audio-file', { name: 'Họp giao ban tuần 46.m4a', mimeType: 'audio/mp4', buffer: bytes });
+  await until(async () => (await nativeCalls(page, 'fileTranscribe')).length === 1, 'gọi plugin nhận dạng file');
+  eq(await nativeCalls(page, 'fileBegin'), [{ name: 'Họp giao ban tuần 46.m4a', size: 1300000 }], 'mở file tạm');
+  eq((await nativeCalls(page, 'fileChunk')).length, 3, 'chuyển file thành 3 khúc 512 KB');
+  const id = await page.evaluate(() => window.__native.job.id);
+  eq(await page.evaluate((i) => window.__nativeFileBytes(i), id), { length: 1300000, sha }, 'plugin nhận đủ và đúng từng byte');
+  eq(await nativeCalls(page, 'fileTranscribe'), [{ id, language: 'vi-VN' }], 'nhận dạng tiếng Việt');
+  eq((await nativeCalls(page, 'keepAwake')).pop(), { on: true }, 'giữ màn hình sáng trong lúc chuyển');
+  eq(await nativeCalls(page, 'start'), [], 'không bật nhận dạng micro');
+  await page.evaluate((i) => window.__nativeEmit('fileProgress', { id: i, value: 0.4 }), id);
+  await until(async () => /40%/.test(await page.textContent('#file-progress-text')), 'tiến trình 40%');
+  await page.evaluate((i) => window.__nativeEmit('filePartial', { id: i, text: 'hôm nay chúng ta' }), id);
+  eq(await page.textContent('#live-transcript .interim'), 'hôm nay chúng ta', 'đoạn đang dở');
+  await page.evaluate((i) => window.__nativeEmit('fileSegment', { id: 'khác', text: 'không thuộc file này' }), id);
+  for (const sentence of SPOKEN.slice(0, 6)) await page.evaluate(([i, t]) => window.__nativeEmit('fileSegment', { id: i, text: t }), [id, sentence]);
+  const live = await page.textContent('#live-transcript');
+  assert(live.startsWith('Hôm nay chúng ta họp về kế hoạch ra mắt sản phẩm mới.') && !live.includes('không thuộc file này'), `văn bản hiện dần: ${live.slice(0, 80)}`);
+  await until(() => page.evaluate(() => !document.querySelector('#live-preview').hidden), 'xem trước tóm tắt trong lúc chuyển');
+  await page.evaluate(() => window.__nativeFileDone(''));
+  await waitResult(page, 'Họp giao ban tuần 46');
+  const rows = await page.evaluate(() => Array.from(document.querySelectorAll('#actions-table tbody tr')).map((tr) => tr.querySelector('.a-owner').value));
+  assert(rows.includes('An'), `việc cần làm có người phụ trách: ${JSON.stringify(rows)}`);
+  eq(await page.textContent('#transcript-source'), '(nhận dạng từ file ghi âm)', 'ghi rõ văn bản lấy từ file');
+  await until(() => page.evaluate(() => !document.querySelector('#result-audio').hidden && document.querySelector('#result-audio').src.startsWith('blob:')), 'nghe lại được file đã nhập');
+  eq((await nativeCalls(page, 'keepAwake')).pop(), { on: false }, 'thôi giữ màn hình sáng');
+  eq(await nativeCalls(page, 'fileCancel'), [{ id }], 'dọn file tạm của plugin');
+  assert(/754|12:34/.test(await page.textContent('#result-meta')), 'thời lượng của file');
+  eq(offOrigin(page), [], 'không gọi mạng');
+});
+
+step('doc-lap-nhap-file-loi: máy không hỗ trợ, plugin báo lỗi, lỗi giữa chừng, hủy: báo rõ và không mất phần đã có', async (ctx) => {
+  // Android 12 trở xuống: không có cách chuyển file thành văn bản trên máy
+  const old = ctx.page = await open(null, PHONE, { speech: 'native' });
+  await old.addInitScript(() => { window.__native.fileSupport = { available: false, reason: 'android-version' }; });
+  await old.goto(WWW + '/');
+  await until(() => old.evaluate(() => /Android 13/.test(document.querySelector('#file-note').textContent)), 'nói rõ cần Android 13');
+  assert(await old.isHidden('#file-pick'), 'ẩn nút nhập file');
+  await old.close();
+
+  const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
+  await until(() => page.evaluate(() => /ngay trên điện thoại/.test(document.querySelector('#file-note').textContent)), 'sẵn sàng');
+  // dịch vụ của máy không đọc âm thanh từ file
+  await page.evaluate(() => { window.__native.fileError = { code: 'unsupported', message: 'không đọc file' }; });
+  await page.setInputFiles('#audio-file', { name: 'a.m4a', mimeType: 'audio/mp4', buffer: Buffer.alloc(1000, 1) });
+  await until(async () => /chưa chuyển được file ghi âm/.test(await page.textContent('#toast')), 'báo máy không hỗ trợ');
+  assert(await page.isHidden('#preview') && await page.isHidden('#live-transcript'), 'không giữ gì khi không có văn bản');
+  assert(await page.isEnabled('#btn-record'), 'bật lại nút ghi');
+  eq(await nativeCalls(page, 'fileCancel'), [{ id: 'f1' }], 'dọn file tạm khi lỗi');
+  // lỗi giữa chừng: giữ phần đã chuyển được
+  await page.evaluate(() => { window.__native.fileError = null; });
+  await page.setInputFiles('#audio-file', { name: 'b.m4a', mimeType: 'audio/mp4', buffer: Buffer.alloc(2000, 2) });
+  await until(async () => (await nativeCalls(page, 'fileTranscribe')).length === 2, 'lần hai');
+  for (const sentence of SPOKEN.slice(0, 4)) await page.evaluate((t) => window.__nativeEmit('fileSegment', { id: 'f2', text: t }), sentence);
+  await page.evaluate(() => window.__nativeFileFail('network', 'mất mạng'));
+  await until(async () => /Mới chuyển được một phần/.test(await recState(page)), 'giữ phần đã có');
+  assert(await page.isVisible('#preview') && /4 câu|từ đã nhận dạng/.test(await page.textContent('#preview-info')), 'phần đã có chờ tóm tắt');
+  assert(/không kết nối được/.test(await page.textContent('#toast')), 'nói rõ lỗi mạng');
+  // hủy
+  await page.setInputFiles('#audio-file', { name: 'c.m4a', mimeType: 'audio/mp4', buffer: Buffer.alloc(3000, 3) });
+  await until(async () => (await nativeCalls(page, 'fileTranscribe')).length === 3, 'lần ba');
+  await page.click('#btn-file-cancel');
+  await until(async () => /Đã hủy/.test(await recState(page)), 'báo đã hủy');
+  assert((await nativeCalls(page, 'fileCancel')).some((c) => c.id === 'f3'), 'báo plugin hủy');
+  assert(await page.isHidden('#file-progress') && await page.isEnabled('#btn-record'), 'giao diện trở lại');
+  eq((await nativeCalls(page, 'keepAwake')).pop(), { on: false }, 'thôi giữ màn hình sáng');
+});
+
 step('di-dong-www: máy chủ AI là tùy chọn, nhập địa chỉ thì chạy chéo origin, bỏ đi thì về độc lập', async (ctx) => {
   const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
   await analyzeText(page, 'Ghi chú trên máy');
@@ -1380,7 +1562,7 @@ function serveStatic(dir) {
     // Máy không đặt locale UTF-8 (CI, container) thì Chromium đổi tên file tải xuống có dấu thành "download"
     // (đã đo: LANG rỗng -> "download", LANG=C.UTF-8 -> đúng tên). Đây là lỗi môi trường, không phải lỗi app.
     browser = await chromium.launch({
-      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
+      args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'],
       env: Object.assign({}, process.env, { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8' }),
     });
     for (const s of selected) {

@@ -225,6 +225,7 @@
     for (const row of await all('feedback')) if (row.meeting_id === id) await del('feedback', row.id);
     return null;
   }
+  const TEXT_SOURCES = ['device', 'file', 'browser'];   // văn bản do thiết bị nhận dạng: lúc nói, từ file, trình duyệt
   async function uploadAudio(id, form) {
     const m = await meetingOr404(id);
     const blob = form.get('audio');
@@ -237,8 +238,9 @@
     if (isFinite(duration) && duration > 0 && duration < 30 * 24 * 3600) m.duration_sec = duration;
     const live = form.get('live_transcript');
     if (typeof live === 'string' && live.trim()) {
+      const source = form.get('transcript_source');
       m.transcript = engine.nfc(live).trim();
-      m.transcript_source = 'device';
+      m.transcript_source = TEXT_SOURCES.indexOf(source) >= 0 ? source : 'device';
     }
     await saveMeeting(m);
     return publicMeeting(m, true);
@@ -495,9 +497,8 @@
     if (!transcript) {
       if (!m.has_audio) throw apiError(400, 'Cuộc họp chưa có âm thanh hoặc văn bản');
       m.status = 'error';
-      m.error = 'Bản ghi này chỉ có âm thanh, chưa có văn bản. Chế độ không cần AI nhận dạng giọng nói ngay lúc bạn nói: '
-        + 'hãy ghi lại bằng nút ghi âm (văn bản hiện ra khi bạn nói) hoặc dán văn bản vào ô bên dưới. '
-        + 'Muốn nhận dạng từ file âm thanh thì cần kết nối máy chủ có Whisper.';
+      m.error = 'Bản ghi này chỉ có âm thanh, chưa có văn bản. Hãy nhập lại file bằng nút "Nhập bản ghi âm có sẵn" để máy '
+        + 'chuyển thành văn bản, ghi lại bằng nút ghi âm (văn bản hiện ra khi bạn nói), hoặc dán văn bản vào ô bên dưới.';
       await saveMeeting(m);
       return { started: true, meeting: publicMeeting(m, true) };
     }
@@ -528,7 +529,7 @@
     const original = m.transcript || '';
     const edited = engine.nfc(String(body.transcript === undefined || body.transcript === null ? '' : body.transcript)).trim();
     const learned = original ? await learnFromEdit(original, edited) : [];
-    let source = m.transcript_source || (body.source === 'device' ? 'device' : 'manual');
+    let source = m.transcript_source || (body.source === 'device' || body.source === 'file' ? body.source : 'manual');
     if (original.trim() && edited !== original) {
       await put('feedback', { meeting_id: id, kind: 'transcript_edit', created_at: nowIso() });
       if (!/\+edited$/.test(source)) source += '+edited';

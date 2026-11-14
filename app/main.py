@@ -47,9 +47,12 @@ MAX_DURATION_SEC = 30 * 24 * 3600
 SQLITE_MAX_INT = 2**63 - 1
 
 # nguồn văn bản mà client được tự khai khi gửi văn bản lần đầu
-TRANSCRIPT_SOURCES = {"device", "browser", "manual"}
+TRANSCRIPT_SOURCES = {"device", "browser", "manual", "file"}
+# văn bản do thiết bị/trình duyệt nhận dạng (lúc nói hoặc từ file): chỉ là bản nháp, có Whisper thì nhận dạng lại
+DRAFT_SOURCES = {"device", "browser", "file"}
 
-ALLOWED_AUDIO_EXT = {".webm", ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".aac", ".wma", ".mkv"}
+ALLOWED_AUDIO_EXT = {".webm", ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".aac", ".wma", ".mkv",
+                     ".amr", ".3gp", ".3ga", ".caf", ".aif", ".aiff"}
 
 
 # ------------------------------------------------------------------ schemas
@@ -210,7 +213,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/meetings/{meeting_id}/audio")
     def upload_audio(meeting_id: str, audio: UploadFile = File(...), duration_sec: float | None = Form(None),
-                     live_transcript: str | None = Form(None)) -> dict:
+                     live_transcript: str | None = Form(None), transcript_source: str | None = Form(None)) -> dict:
         get_meeting_or_404(meeting_id)
         ensure_not_processing(meeting_id)
         filename = audio.filename or "recording.webm"
@@ -234,7 +237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             fields["duration_sec"] = float(duration_sec)
         if live_transcript and live_transcript.strip():
             fields["transcript"] = nfc(live_transcript).strip()
-            fields["transcript_source"] = "browser"
+            fields["transcript_source"] = transcript_source if transcript_source in DRAFT_SOURCES else "browser"
         db.update_meeting(meeting_id, **fields)
         if db.get_meeting(meeting_id) is None:
             target.unlink(missing_ok=True)  # cuộc họp bị xóa trong lúc đang tải lên

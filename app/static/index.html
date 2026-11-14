@@ -103,11 +103,21 @@
 
           <div id="file-row">
             <div class="divider"><span>hoặc</span></div>
-            <label class="file-input">
-              📁 Chọn file ghi âm có sẵn (webm, mp3, m4a, wav…)
-              <input type="file" id="audio-file" accept="audio/*,video/webm,video/mp4">
-            </label>
-            <small class="muted" id="file-note"></small>
+            <div class="file-import">
+              <label class="btn file-input" id="file-pick" tabindex="0" role="button" aria-label="Nhập bản ghi âm có sẵn để chuyển thành văn bản và tóm tắt">
+                📂 Nhập bản ghi âm có sẵn
+                <input type="file" id="audio-file" tabindex="-1"
+                  accept="audio/*,video/mp4,video/webm,video/3gpp,.m4a,.mp3,.wav,.aac,.ogg,.oga,.opus,.webm,.flac,.amr,.3gp,.caf,.aif,.aiff,.wma">
+              </label>
+              <small class="muted" id="file-note"></small>
+              <div class="file-progress" id="file-progress" hidden>
+                <div class="progress-track" aria-hidden="true"><div class="progress-fill" id="file-progress-bar"></div></div>
+                <div class="file-progress-row">
+                  <span id="file-progress-text" role="status"></span>
+                  <button class="btn small" id="btn-file-cancel">✕ Hủy</button>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="preview" id="preview" hidden>

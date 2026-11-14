@@ -261,3 +261,37 @@ def test_summary_size_follows_what_the_user_keeps(client):
     assert len(third["analysis"]["mindmap"]["children"]) < 8
     stats = client.get("/api/learning/stats").json()["feedback"]
     assert stats["edits"] == 2 and stats["avg_summary_items"] == 3
+
+
+def test_imported_recording_recognized_on_the_device(client):
+    """File ghi âm có sẵn được thiết bị/trình duyệt chuyển thành văn bản rồi gửi lên kèm file để nghe lại."""
+    meeting = client.post("/api/meetings", json={"title": "", "duration_sec": 1830.0}).json()
+    mid = meeting["id"]
+    resp = client.post(f"/api/meetings/{mid}/audio",
+                       files={"audio": ("Ghi âm 2026-11-14.amr", io.BytesIO(b"#!AMR\nfake"), "audio/amr")},
+                       data={"duration_sec": "1830", "live_transcript": VI_TRANSCRIPT, "transcript_source": "file"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["transcript_source"] == "file" and body["has_audio"] and body["duration_sec"] == 1830.0
+    client.post(f"/api/meetings/{mid}/process")
+    meeting = client.get(f"/api/meetings/{mid}").json()
+    assert meeting["status"] == "done" and meeting["transcript_source"] == "file"
+    assert meeting["analysis"]["action_items"] and meeting["analysis"]["decisions"]
+    # đuôi .amr (máy ghi âm Android) được giữ nguyên, phát lại đúng kiểu
+    audio = client.get(f"/api/meetings/{mid}/audio")
+    assert audio.status_code == 200 and audio.content == b"#!AMR\nfake"
+    path, _ = client.app.state.db.get_meeting_audio_path(mid)
+    assert path.endswith(".amr")
+    # nguồn lạ thì coi như nhận dạng lúc nói, không tin nhãn tùy ý từ ngoài
+    other = client.post("/api/meetings", json={"title": "Nguồn lạ"}).json()
+    resp = client.post(f"/api/meetings/{other['id']}/audio", files={"audio": ("a.m4a", io.BytesIO(b"m4a"), "audio/mp4")},
+                       data={"live_transcript": "xin chào", "transcript_source": "whisper:large"})
+    assert resp.json()["transcript_source"] == "browser"
+    # sửa văn bản của file: nhãn ghi nhận đã sửa
+    client.put(f"/api/meetings/{mid}/transcript", json={"transcript": VI_TRANSCRIPT + " Thêm một câu."})
+    assert client.get(f"/api/meetings/{mid}").json()["transcript_source"] == "file+edited"
+    # chỉ có văn bản (không lưu được file âm thanh trên máy) vẫn ghi đúng nguồn
+    third = client.post("/api/meetings", json={"title": "Chỉ văn bản"}).json()
+    resp = client.put(f"/api/meetings/{third['id']}/transcript", json={"transcript": VI_TRANSCRIPT, "source": "file"})
+    assert resp.json()["transcript_source"] == "file"
+

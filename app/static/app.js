@@ -123,6 +123,7 @@
     const base = source.replace(/\+edited$/, '');
     let label = base;
     if (base === 'browser' || base === 'device') label = 'nhận dạng trực tiếp khi nói';
+    else if (base === 'file') label = 'nhận dạng từ file ghi âm';
     else if (base === 'manual') label = 'nhập tay';
     else if (base.indexOf('whisper:') === 0) label = `Whisper ${base.slice(8)}`;
     return label + (edited ? ', đã sửa' : '');
@@ -182,9 +183,25 @@
     line.className = `stt-line ${cls}`;
     // chế độ độc lập luôn nhận dạng trực tiếp (không còn cách nào khác); máy không có nhận dạng thì ô chọn vô nghĩa
     $('#live-captions-row').hidden = LOCAL || !support.provider;
-    $('#file-row').hidden = LOCAL;
-    $('#file-note').textContent = !LOCAL && state.health && !whisperReady()
-      ? 'Máy chủ chưa cài Whisper nên file ghi âm có sẵn chỉ lưu lại để nghe, không tự chuyển thành văn bản được.' : '';
+    renderFileNote();
+  }
+  /* File ghi âm có sẵn sẽ được chuyển thành văn bản bằng: 'server' (Whisper), 'native' (plugin của app), 'web'
+     (trình duyệt nghe file), hoặc null (không cách nào). */
+  function filePlan() {
+    if (whisperReady()) return 'server';
+    return fileInfo.provider || null;
+  }
+  function renderFileNote() {
+    const plan = filePlan();
+    let note = '';
+    if (plan === 'server') note = 'Whisper trên máy chủ chuyển file thành văn bản, rồi tự tóm tắt và vẽ sơ đồ tư duy.';
+    else if (plan === 'native') note = 'Bộ nhận dạng giọng nói của máy chuyển file thành văn bản ngay trên điện thoại, không cần máy chủ, rồi tự tóm tắt và vẽ sơ đồ tư duy.';
+    else if (plan === 'web') note = 'Trình duyệt nghe file (không phát ra loa) và chuyển thành văn bản, rồi tự tóm tắt và vẽ sơ đồ tư duy. File dài bao nhiêu thì mất chừng ấy thời gian.';
+    else if (!fileInfoReady) note = '';
+    else if (LOCAL) note = 'Máy này chưa chuyển được file ghi âm thành văn bản (cần Android 13 trở lên hoặc iPhone). Hãy ghi trực tiếp bằng nút ghi âm hoặc dán văn bản.';
+    else if (state.health) note = 'Trình duyệt này chưa chuyển được file ghi âm thành văn bản và máy chủ chưa cài Whisper: hãy mở bằng Chrome hoặc Edge bản mới, hoặc dùng ứng dụng trên điện thoại. File chọn ở đây chỉ lưu lại để nghe.';
+    $('#file-note').textContent = note;
+    $('#file-pick').hidden = LOCAL && fileInfoReady && !plan;
   }
   $('#live-captions').addEventListener('change', () => { captionsTouched = true; renderSttLine(); });
   try { $('#auto-process').checked = localStorage.getItem('m2m.auto') !== '0'; } catch (_) { /* giữ mặc định */ }
@@ -510,6 +527,7 @@
   async function startRecording() {
     // Bấm lặp khi hộp thoại xin quyền chưa trả lời: không mở luồng micro thứ hai (luồng đầu sẽ không bao giờ tắt)
     if (rec.starting || rec.active || rec.stopping) return;
+    if (fileJob) { toast('Đang chuyển file ghi âm thành văn bản. Hãy chờ xong hoặc bấm Hủy rồi mới ghi.', true); return; }
     const plan = capturePlan();
     const canCapture = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
     if (plan.audio && !canCapture) {
@@ -656,14 +674,182 @@
   $('#btn-discard').addEventListener('click', discardRecording);
   $('#audio-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    const ext = (file.name.split('.').pop() || 'webm').toLowerCase();
-    // Văn bản nhận dạng trực tiếp thuộc về bản ghi micro trước đó, không phải file này
-    resetLive();
-    setCapture({ blob: file, ext, duration: 0, text: '' });
-    $('#rec-state').textContent = `Đã chọn file: ${file.name}`;
-    if (!$('#meeting-title').value) $('#meeting-title').value = file.name.replace(/\.[^.]+$/, '');
+    e.target.value = '';   // chọn lại đúng file đó lần nữa vẫn được
+    if (file) importFile(file);
   });
+  $('#file-pick').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (!fileJob) $('#audio-file').click(); }
+  });
+  $('#btn-file-cancel').addEventListener('click', () => { if (fileJob) fileJob.job.cancel(); });
+
+  // ------------------------------------------------- nhập bản ghi âm có sẵn
+  const MAX_IMPORT_BYTES = 500 * 1024 * 1024;
+  let fileInfo = { provider: null, label: '', realtime: false };
+  let fileInfoReady = false;
+  let fileJob = null;   // {job, file, ext, duration, provider}
+  function refreshFileSupport() {
+    if (!speech) { fileInfoReady = true; renderFileNote(); return; }
+    speech.fileSupport().then((info) => { fileInfo = info || fileInfo; }, () => {}).then(() => {
+      fileInfoReady = true;
+      renderFileNote();
+    });
+  }
+  function fileExt(file) {
+    const dot = (file.name || '').lastIndexOf('.');
+    const ext = dot >= 0 ? file.name.slice(dot + 1).toLowerCase() : '';
+    return /^[a-z0-9]{1,5}$/.test(ext) ? ext : extForMime(file.type || '');
+  }
+  /* Tên file có nghĩa ("Họp dự án A.m4a") thì dùng làm tiêu đề; tên máy tự đặt ("Recording 12", "AUD-2024...",
+     "Ghi âm 2024-11-14") thì bỏ, để tiêu đề lấy từ nội dung. */
+  function titleFromFileName(name) {
+    const base = String(name || '').replace(/\.[^.]+$/, '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!base) return '';
+    const letters = (base.match(/\p{L}/gu) || []).length;
+    const digits = (base.match(/\p{N}/gu) || []).length;
+    if (letters < 3 || digits > letters) return '';
+    if (/^(new recording|recording|record|rec|audio|voice memo|voice|memo|sound|track|ptt|aud|vn|ghi âm mới|ghi âm|ghi am|bản ghi mới|bản ghi|ban ghi|tệp ghi âm|cuộc gọi|call)(?=$|[\s\d._-])/iu.test(base)) return '';
+    return base.slice(0, 200);
+  }
+  function probeDuration(file) {
+    return new Promise((resolve) => {
+      let url = '';
+      try { url = URL.createObjectURL(file); } catch (_) { resolve(0); return; }
+      const probe = document.createElement('audio');
+      let timer = null;
+      const done = (value) => {
+        clearTimeout(timer);
+        probe.onloadedmetadata = null; probe.onerror = null;
+        URL.revokeObjectURL(url);
+        resolve(value);
+      };
+      timer = setTimeout(() => done(0), 4000);
+      probe.preload = 'metadata';
+      probe.onloadedmetadata = () => done(isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 0);
+      probe.onerror = () => done(0);
+      probe.src = url;
+    });
+  }
+  function setFileBusy(busy) {
+    $('#file-pick').classList.toggle('disabled', busy);
+    $('#audio-file').disabled = busy;
+    $('#btn-record').disabled = busy;
+  }
+  let fileProgress = null;
+  function showFileProgress(progress) {
+    if (progress) fileProgress = progress;
+    const p = fileProgress || { phase: 'recognize', value: 0 };
+    const value = Math.max(0, Math.min(1, Number(p.value) || 0));
+    $('#file-progress').hidden = false;
+    $('#file-progress-bar').style.width = `${Math.round(value * 100)}%`;
+    let text;
+    if (p.phase === 'transfer') text = `Đang chuẩn bị file… ${Math.round(value * 100)}%`;
+    else if (p.duration) text = `Đang nghe và nhận dạng… ${fmtTime(p.current)} / ${fmtTime(p.duration)}`;
+    else text = `Đang nhận dạng… ${Math.round(value * 100)}%`;
+    const words = wordCount(liveText());
+    if (words) text += ` · ${words} từ`;
+    $('#file-progress-text').textContent = text;
+  }
+  async function importFile(file) {
+    if (isRecording() || rec.starting || rec.stopping) { toast('Hãy dừng ghi âm trước khi nhập file.', true); return; }
+    if (fileJob) { toast('Đang chuyển một file khác thành văn bản. Hãy chờ xong hoặc bấm Hủy.', true); return; }
+    if (!file.size) { toast('File rỗng.', true); return; }
+    const plan = filePlan();
+    if (plan !== 'server' && file.size > MAX_IMPORT_BYTES) {
+      toast(`File quá lớn (${Math.round(file.size / 1024 / 1024)} MB). Hãy chọn file dưới ${MAX_IMPORT_BYTES / 1024 / 1024} MB.`, true);
+      return;
+    }
+    if (!plan && LOCAL) { toast($('#file-note').textContent || speech.describe('unsupported'), true); return; }
+    // bản ghi micro trước đó (và văn bản của nó) không thuộc về file này
+    resetLive();
+    state.capture = null;
+    $('#preview').hidden = true;
+    const ext = fileExt(file);
+    const named = titleFromFileName(file.name);
+    if (named && !$('#meeting-title').value.trim()) $('#meeting-title').value = named;
+    const duration = await probeDuration(file);
+    if (fileJob || isRecording()) return;   // trong lúc đọc thời lượng người dùng đã làm việc khác
+    if (plan === 'server' || !plan) {
+      setCapture({ blob: file, ext, duration, text: '', source: 'file' });
+      if (plan === 'server' && $('#auto-process').checked) {
+        $('#rec-state').textContent = `Đã chọn file: ${file.name}. Đang gửi cho máy chủ…`;
+        processRecording();
+      } else {
+        $('#rec-state').textContent = plan
+          ? `Đã chọn file: ${file.name}. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý.`
+          : `Đã chọn file: ${file.name}. File chỉ lưu lại để nghe, chưa chuyển thành văn bản được.`;
+      }
+      return;
+    }
+    transcribeImported(file, ext, duration, plan);
+  }
+  function transcribeImported(file, ext, duration, provider) {
+    let current = null;
+    const job = speech.transcribeFile(file, {
+      provider,
+      lang: speech.langTag($('#meeting-language').value),
+      onPartial: (text) => {
+        if (fileJob !== current) return;
+        state.live.interim = text;
+        renderLive();
+      },
+      onFinal: (text) => {
+        if (fileJob !== current) return;
+        const sentence = speech.formatUtterance(text);
+        if (!sentence) return;
+        state.live.finals.push(sentence);
+        state.live.interim = '';
+        renderLive();
+        scheduleLiveAnalysis();
+        showFileProgress();
+      },
+      onProgress: (progress) => { if (fileJob === current) showFileProgress(progress); },
+    });
+    current = { job, file, ext, duration, provider };
+    fileJob = current;
+    fileProgress = null;
+    setFileBusy(true);
+    speech.keepAwake(true);
+    $('#live-transcript').hidden = false;
+    renderLive();
+    showFileProgress({ phase: provider === 'native' ? 'transfer' : 'recognize', value: 0 });
+    $('#rec-state').textContent = `Đang chuyển "${file.name}" thành văn bản…`;
+    return job.promise.then((result) => finishImport(current, null, result), (err) => finishImport(current, err, null));
+  }
+  function finishImport(current, err, result) {
+    if (fileJob !== current) return;
+    fileJob = null;
+    speech.keepAwake(false);
+    setFileBusy(false);
+    $('#file-progress').hidden = true;
+    state.live.interim = '';
+    let text = liveText().trim();
+    if (!text && result && result.text) text = speech.formatUtterance(result.text);
+    if (err && err.code === 'cancelled') {
+      resetLive();
+      $('#rec-state').textContent = 'Đã hủy chuyển file thành văn bản.';
+      return;
+    }
+    const duration = current.duration || (result && result.duration) || 0;
+    if (!text) {
+      const message = err ? err.message : 'Không nhận dạng được lời nói nào trong file.';
+      resetLive();
+      $('#rec-state').textContent = message;
+      toast(message, true);
+      // trên máy chủ vẫn lưu được file để nghe lại; chế độ độc lập không có văn bản thì không có gì để làm
+      if (!LOCAL) setCapture({ blob: current.file, ext: current.ext, duration, text: '', source: 'file' });
+      return;
+    }
+    setCapture({ blob: current.file, ext: current.ext, duration, text, source: 'file' });
+    if (err) {
+      toast(`${err.message} Đã giữ phần chuyển được thành văn bản.`, true);
+      $('#rec-state').textContent = 'Mới chuyển được một phần file. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý phần đã có.';
+    } else if ($('#auto-process').checked) {
+      $('#rec-state').textContent = 'Đã chuyển xong file thành văn bản. Đang tóm tắt và vẽ sơ đồ tư duy…';
+      processRecording();
+    } else {
+      $('#rec-state').textContent = 'Đã chuyển xong file thành văn bản. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý.';
+    }
+  }
 
   // ----------------------------------------------------------- processing
   function participantList() {
@@ -694,20 +880,31 @@
       setProgress('Đang tạo cuộc họp…');
       const nav = openSeq;   // để biết người dùng có mở cuộc họp khác trong lúc đang gửi hay không
       const payload = meetingPayload();
-      if (!payload.title) payload.title = autoTitle(capture.text, 'Ghi âm');
-      if (!capture.blob && capture.duration) payload.duration_sec = capture.duration;
+      if (!payload.title) payload.title = autoTitle(capture.text, capture.source === 'file' ? 'Bản ghi' : 'Ghi âm');
+      if (capture.duration) payload.duration_sec = capture.duration;
       const meeting = await api.post('/api/meetings', payload);
+      const textSource = capture.source === 'file' ? 'file' : 'device';
+      let audioSaved = false;
       if (capture.blob) {
         setProgress(LOCAL ? 'Đang lưu âm thanh…' : 'Đang tải âm thanh lên…');
         const form = new FormData();
         form.append('audio', capture.blob, `recording.${capture.ext}`);
         if (capture.duration) form.append('duration_sec', String(capture.duration));
-        if (capture.text) form.append('live_transcript', capture.text);
-        await api.upload(`/api/meetings/${meeting.id}/audio`, form);
-      } else {
-        await api.put(`/api/meetings/${meeting.id}/transcript`, { transcript: capture.text, source: 'device' });
+        if (capture.text) {
+          form.append('live_transcript', capture.text);
+          form.append('transcript_source', capture.source === 'file' ? 'file' : (LOCAL ? 'device' : 'browser'));
+        }
+        try {
+          await api.upload(`/api/meetings/${meeting.id}/audio`, form);
+          audioSaved = true;
+        } catch (err) {
+          // không lưu được âm thanh (máy hết chỗ, file quá lớn...) nhưng đã có văn bản: vẫn tóm tắt, chỉ không nghe lại được
+          if (!capture.text || err.status === 404) throw err;
+          toast(`Không lưu được file âm thanh (${err.message}). Vẫn tóm tắt từ văn bản đã có.`, true);
+        }
       }
-      await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: !!capture.blob });
+      if (!audioSaved) await api.put(`/api/meetings/${meeting.id}/transcript`, { transcript: capture.text, source: textSource });
+      await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: audioSaved });
       setProgress('Đang xử lý…');
       await loadMeetings();
       startPolling(meeting.id, { capture, nav });
@@ -1090,6 +1287,7 @@
   $('#btn-reindex').hidden = LOCAL;
   $('#live-captions').checked = true;   // mặc định cho tới khi biết máy chủ có Whisper hay không
   renderSttLine();
+  refreshFileSupport();
   loadHealth();
   loadMeetings().catch((err) => toast(err.message, true));
   if (!LOCAL) setInterval(loadHealth, 30000);

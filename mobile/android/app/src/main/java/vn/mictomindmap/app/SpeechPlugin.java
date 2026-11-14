@@ -8,6 +8,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ResolveInfo;
 import android.media.AudioManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -16,6 +17,7 @@ import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
+import android.util.Base64;
 import android.view.WindowManager;
 
 import com.getcapacitor.JSObject;
@@ -27,8 +29,14 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 
 /**
  * Plugin "M2MSpeech": chuyển lời nói thành văn bản ngay khi nói bằng bộ nhận dạng giọng nói có sẵn của Android
@@ -37,6 +45,11 @@ import java.util.List;
  * Phương thức: available(), start({language}), stop(), keepAwake({on}).
  * Sự kiện: "partial" {text} (phần đang nói dở), "final" {text} (một câu đã chốt), "state" {listening, reason},
  * "error" {code, fatal}, "level" {value 0..1}.
+ *
+ * Nhận dạng từ file ghi âm có sẵn (Android 13+, xem FileRecognizer): fileSupport(), fileBegin({name, size}) -> {id},
+ * fileChunk({id, data: base64}) (giao diện gửi file từng khúc), fileTranscribe({id, language}) -> {text, duration}
+ * (xong mới trả), fileCancel({id}). Sự kiện "fileProgress" {id, value}, "filePartial" {id, text},
+ * "fileSegment" {id, text}.
  *
  * WebView của Android không có Web Speech API, và micro không dùng chung được giữa trang web với bộ nhận dạng, nên
  * khi plugin này chạy thì trang web không tự mở micro nữa.
@@ -68,6 +81,10 @@ public class SpeechPlugin extends Plugin {
     private boolean mutedByUs;
     private boolean keepAwakeRequested;
     private long lastLevelAt;
+    // nhận dạng từ file
+    private final Map<String, File> importFiles = new HashMap<>();
+    private FileRecognizer fileRecognizer;
+    private String fileRecognizerId;
 
     @Override
     public void load() {
@@ -88,6 +105,10 @@ public class SpeechPlugin extends Plugin {
 
     @PluginMethod
     public void start(PluginCall call) {
+        if (fileRecognizer != null) {
+            call.reject("Bộ nhận dạng đang chuyển một file ghi âm thành văn bản", "busy");
+            return;
+        }
         if (!SpeechRecognizer.isRecognitionAvailable(getContext())) {
             call.reject("Thiết bị không có dịch vụ nhận dạng giọng nói", "unavailable");
             return;
@@ -154,6 +175,262 @@ public class SpeechPlugin extends Plugin {
         });
     }
 
+    // ------------------------------------------------------- nhận dạng từ file ghi âm có sẵn
+    @PluginMethod
+    public void fileSupport(PluginCall call) {
+        JSObject result = new JSObject();
+        boolean modern = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU;
+        boolean onDevice = modern && SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext());
+        boolean any = modern && (onDevice || SpeechRecognizer.isRecognitionAvailable(getContext()));
+        result.put("available", any);
+        result.put("onDevice", onDevice);
+        if (!modern) {
+            result.put("reason", "android-version");
+        } else if (!any) {
+            result.put("reason", "no-service");
+        }
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void fileBegin(PluginCall call) {
+        File dir = importDir();
+        if (!dir.isDirectory() && !dir.mkdirs()) {
+            call.reject("Không tạo được thư mục tạm", "unknown");
+            return;
+        }
+        synchronized (importFiles) {
+            if (importFiles.isEmpty() && fileRecognizer == null) {
+                // file tạm còn sót của lần chạy trước (app bị tắt giữa chừng)
+                File[] stale = dir.listFiles();
+                if (stale != null) {
+                    for (File old : stale) {
+                        //noinspection ResultOfMethodCallIgnored
+                        old.delete();
+                    }
+                }
+            }
+        }
+        String id = UUID.randomUUID().toString();
+        File target = new File(dir, id + "." + safeExtension(call.getString("name", "")));
+        try {
+            if (!target.createNewFile()) {
+                throw new IOException("đã có file trùng tên");
+            }
+        } catch (IOException e) {
+            call.reject("Không tạo được file tạm: " + e.getMessage(), "unknown");
+            return;
+        }
+        synchronized (importFiles) {
+            importFiles.put(id, target);
+        }
+        JSObject result = new JSObject();
+        result.put("id", id);
+        call.resolve(result);
+    }
+
+    @PluginMethod
+    public void fileChunk(PluginCall call) {
+        File target = importFile(call.getString("id"));
+        if (target == null) {
+            call.reject("Không tìm thấy file tạm", "unknown");
+            return;
+        }
+        byte[] bytes;
+        try {
+            bytes = Base64.decode(call.getString("data", ""), Base64.DEFAULT);
+        } catch (IllegalArgumentException e) {
+            call.reject("Dữ liệu file hỏng", "unknown");
+            return;
+        }
+        try (FileOutputStream out = new FileOutputStream(target, true)) {
+            out.write(bytes);
+        } catch (IOException e) {
+            call.reject("Không ghi được file tạm (bộ nhớ máy có thể đã đầy): " + e.getMessage(), "storage");
+            return;
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void fileTranscribe(PluginCall call) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            call.reject("Cần Android 13 trở lên để chuyển file ghi âm thành văn bản", "unsupported");
+            return;
+        }
+        if (importFile(call.getString("id")) == null) {
+            call.reject("Không tìm thấy file tạm", "unknown");
+            return;
+        }
+        if (getPermissionState(MICROPHONE) != PermissionState.GRANTED) {
+            // dịch vụ nhận dạng của Android kiểm quyền micro của ứng dụng gọi nó, kể cả khi đọc âm thanh từ file
+            requestPermissionForAlias(MICROPHONE, call, "fileMicrophoneResult");
+            return;
+        }
+        beginFile(call);
+    }
+
+    @PermissionCallback
+    private void fileMicrophoneResult(PluginCall call) {
+        if (getPermissionState(MICROPHONE) == PermissionState.GRANTED) {
+            beginFile(call);
+        } else {
+            call.reject("Chưa được cấp quyền micro", "permission");
+        }
+    }
+
+    private void beginFile(final PluginCall call) {
+        final String id = call.getString("id");
+        final String language = call.getString("language", "vi-VN");
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                final File target = importFile(id);
+                if (target == null) {
+                    call.reject("Không tìm thấy file tạm", "unknown");
+                    return;
+                }
+                if (fileRecognizer != null || (loop != null && loop.isActive())) {
+                    call.reject("Bộ nhận dạng đang bận", "busy");
+                    return;
+                }
+                fileRecognizerId = id;
+                fileRecognizer = new FileRecognizer(getContext(), handler, target, language, fileChoices(),
+                    new FileRecognizer.Callback() {
+                        @Override
+                        public void partial(String text) {
+                            notifyFile("filePartial", id, "text", text);
+                        }
+
+                        @Override
+                        public void segment(String text) {
+                            notifyFile("fileSegment", id, "text", text);
+                        }
+
+                        @Override
+                        public void progress(double value) {
+                            JSObject data = new JSObject();
+                            data.put("id", id);
+                            data.put("value", value);
+                            notifyListeners("fileProgress", data);
+                        }
+
+                        @Override
+                        public void done(String text, long durationUs) {
+                            finishFile(id);
+                            JSObject result = new JSObject();
+                            result.put("text", text);
+                            result.put("duration", durationUs > 0 ? durationUs / 1e6 : 0);
+                            call.resolve(result);
+                        }
+
+                        @Override
+                        public void error(String code, String partialText) {
+                            finishFile(id);
+                            call.reject(fileMessage(code), code);
+                        }
+                    });
+                applyKeepAwake();
+                fileRecognizer.start();
+            }
+        });
+    }
+
+    @PluginMethod
+    public void fileCancel(final PluginCall call) {
+        final String id = call.getString("id");
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (fileRecognizer != null && id != null && id.equals(fileRecognizerId)) {
+                    fileRecognizer.cancel();   // trả lỗi "cancelled" cho lời gọi fileTranscribe, rồi dọn file
+                } else {
+                    dropImport(id);
+                }
+                call.resolve();
+            }
+        });
+    }
+
+    private void notifyFile(String event, String id, String key, String value) {
+        JSObject data = new JSObject();
+        data.put("id", id);
+        data.put(key, value);
+        notifyListeners(event, data);
+    }
+
+    private void finishFile(String id) {
+        if (id != null && id.equals(fileRecognizerId)) {
+            fileRecognizer = null;
+            fileRecognizerId = null;
+        }
+        dropImport(id);
+        applyKeepAwake();
+    }
+
+    private File importDir() {
+        return new File(getContext().getCacheDir(), "m2m-import");
+    }
+
+    private File importFile(String id) {
+        if (id == null) {
+            return null;
+        }
+        synchronized (importFiles) {
+            return importFiles.get(id);
+        }
+    }
+
+    private void dropImport(String id) {
+        File target;
+        synchronized (importFiles) {
+            target = id == null ? null : importFiles.remove(id);
+        }
+        if (target != null) {
+            //noinspection ResultOfMethodCallIgnored
+            target.delete();
+        }
+    }
+
+    private static String safeExtension(String name) {
+        int dot = name == null ? -1 : name.lastIndexOf('.');
+        String ext = dot >= 0 ? name.substring(dot + 1).toLowerCase(java.util.Locale.ROOT) : "";
+        return ext.matches("[a-z0-9]{1,5}") ? ext : "bin";
+    }
+
+    private static String fileMessage(String code) {
+        switch (code) {
+            case "format":
+                return "Không đọc được file âm thanh này";
+            case "language":
+                return "Bộ nhận dạng của máy chưa có ngôn ngữ này";
+            case "network":
+                return "Dịch vụ nhận dạng giọng nói không kết nối được";
+            case "service-permission":
+                return "Dịch vụ nhận dạng giọng nói của máy chưa được cấp quyền micro";
+            case "cancelled":
+                return "Đã hủy";
+            case "unsupported":
+                return "Bộ nhận dạng giọng nói của máy không nhận âm thanh từ file";
+            default:
+                return "Nhận dạng file gặp lỗi";
+        }
+    }
+
+    /** Thứ tự thử khi nhận dạng từ file: trên thiết bị trước (chắc chắn đọc được âm thanh từ file nhất), rồi các dịch vụ. */
+    private List<FileRecognizer.Choice> fileChoices() {
+        List<FileRecognizer.Choice> choices = new ArrayList<>();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && SpeechRecognizer.isOnDeviceRecognitionAvailable(getContext())) {
+            choices.add(new FileRecognizer.Choice(true, null));
+        }
+        if (SpeechRecognizer.isRecognitionAvailable(getContext())) {
+            for (ComponentName name : orderedServices()) {
+                choices.add(new FileRecognizer.Choice(false, name));
+            }
+        }
+        return choices;
+    }
+
     // ------------------------------------------------------------------ vòng đời
     @Override
     protected void handleOnPause() {
@@ -188,6 +465,9 @@ public class SpeechPlugin extends Plugin {
         if (loop != null) {
             loop.stop(null);
         }
+        if (fileRecognizer != null) {
+            fileRecognizer.cancel();
+        }
         handler.removeCallbacksAndMessages(null);
         muteBeep(false);
         destroyRecognizer();
@@ -204,7 +484,7 @@ public class SpeechPlugin extends Plugin {
         if (activity == null) {
             return;
         }
-        final boolean on = keepAwakeRequested || (loop != null && loop.isActive());
+        final boolean on = keepAwakeRequested || (loop != null && loop.isActive()) || fileRecognizer != null;
         activity.runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -248,6 +528,20 @@ public class SpeechPlugin extends Plugin {
      * được đoạn dài; dịch vụ mặc định của vài hãng máy không nhận tiếng Việt hoặc cần cài đặt riêng mới chạy.
      */
     private void prepareServices() {
+        List<ComponentName> order = orderedServices();
+        if (!order.equals(services)) {
+            services = order;
+            provenIndex = -1;
+        }
+        int wanted = provenIndex >= 0 && provenIndex < services.size() ? provenIndex : 0;
+        if (wanted != serviceIndex) {
+            serviceIndex = wanted;
+            destroyRecognizer();
+        }
+    }
+
+    /** Các dịch vụ nhận dạng của máy theo thứ tự nên thử (phần tử null: dịch vụ mặc định do người dùng chọn). */
+    private List<ComponentName> orderedServices() {
         ComponentName google = null;
         List<ComponentName> others = new ArrayList<>();
         try {
@@ -281,15 +575,7 @@ public class SpeechPlugin extends Plugin {
                 order.add(name);
             }
         }
-        if (!order.equals(services)) {
-            services = order;
-            provenIndex = -1;
-        }
-        int wanted = provenIndex >= 0 && provenIndex < services.size() ? provenIndex : 0;
-        if (wanted != serviceIndex) {
-            serviceIndex = wanted;
-            destroyRecognizer();
-        }
+        return order;
     }
 
     /** Dịch vụ nhận dạng mặc định mà người dùng chọn trong cài đặt của máy (null nếu không đọc được). */
@@ -313,7 +599,7 @@ public class SpeechPlugin extends Plugin {
         }
     }
 
-    private static String bestText(Bundle bundle) {
+    static String bestText(Bundle bundle) {
         if (bundle == null) {
             return "";
         }

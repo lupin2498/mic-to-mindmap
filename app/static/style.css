@@ -147,8 +147,17 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #c7d2fe; border-c
 #file-note { display: block; margin-top: 4px; }
 .divider { display: flex; align-items: center; gap: 12px; color: var(--muted); margin: 16px 0; font-size: 13px; }
 .divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
-.file-input { display: inline-block; cursor: pointer; color: var(--primary); font-weight: 500; }
+.rec-button:disabled { opacity: .4; cursor: not-allowed; }
+.file-import { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.file-input { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 500; }
 .file-input input { display: none; }
+.file-input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.file-input.disabled { opacity: .5; pointer-events: none; }
+.file-progress { width: 100%; }
+.progress-track { height: 8px; border-radius: 4px; background: #e5e7eb; overflow: hidden; }
+.progress-fill { height: 100%; width: 0; background: var(--primary); transition: width .25s ease; }
+.file-progress-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 13.5px; }
+.file-progress-row span { flex: 1; min-width: 0; color: var(--muted); }
 .preview { margin-top: 16px; padding: 14px; background: #f9fafb; border-radius: 10px; border: 1px solid var(--border); }
 .preview audio { width: 100%; }
 .preview-actions { display: flex; gap: 10px; align-items: center; margin-top: 10px; flex-wrap: wrap; }

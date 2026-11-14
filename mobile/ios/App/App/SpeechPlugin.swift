@@ -15,6 +15,10 @@ import UIKit
 /// iOS trả kết quả cộng dồn cho tới khi một lượt nhận dạng kết thúc (và giới hạn mỗi lượt khoảng một phút), nên ở
 /// đây mỗi chỗ ngắt hơi được chốt thành một câu rồi mở lượt mới: với người dùng đó là một lần ghi liên tục.
 /// Mọi trạng thái chỉ được đụng tới trên luồng chính; riêng `request` có khóa vì luồng âm thanh cũng dùng.
+///
+/// Nhận dạng từ file ghi âm có sẵn (xem FileTranscriptionJob): fileSupport(), fileBegin({name, size}) -> {id},
+/// fileChunk({id, data: base64}), fileTranscribe({id, language}) -> {text, duration}, fileCancel({id}).
+/// Sự kiện "fileProgress" {id, value}, "filePartial" {id, text}, "fileSegment" {id, text}.
 @objc(SpeechPlugin)
 public class SpeechPlugin: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "SpeechPlugin"
@@ -23,7 +27,12 @@ public class SpeechPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "available", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stop", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "keepAwake", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "keepAwake", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fileSupport", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fileBegin", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fileChunk", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fileTranscribe", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "fileCancel", returnType: CAPPluginReturnPromise)
     ]
 
     private static let pauseSeconds: TimeInterval = 1.6      // im lặng chừng này thì chốt câu
@@ -50,6 +59,10 @@ public class SpeechPlugin: CAPPlugin, CAPBridgedPlugin {
     private var reportedListening = false
     private var reportedReason = ""
     private var observers: [NSObjectProtocol] = []
+    // nhận dạng từ file: importFiles chỉ đụng tới trên importQueue, fileJob chỉ trên luồng chính
+    private let importQueue = DispatchQueue(label: "vn.mictomindmap.import")
+    private var importFiles: [String: URL] = [:]
+    private var fileJob: FileTranscriptionJob?
 
     override public func load() {
         let center = NotificationCenter.default
@@ -126,9 +139,159 @@ public class SpeechPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    // MARK: - Nhận dạng từ file ghi âm có sẵn
+
+    @objc func fileSupport(_ call: CAPPluginCall) {
+        let recognizer = SFSpeechRecognizer()
+        call.resolve(["available": recognizer != nil, "onDevice": recognizer?.supportsOnDeviceRecognition ?? false])
+    }
+
+    @objc func fileBegin(_ call: CAPPluginCall) {
+        let name = call.getString("name") ?? ""
+        importQueue.async {
+            let manager = FileManager.default
+            let dir = manager.temporaryDirectory.appendingPathComponent("m2m-import", isDirectory: true)
+            do {
+                try manager.createDirectory(at: dir, withIntermediateDirectories: true)
+            } catch {
+                call.reject("Không tạo được thư mục tạm: \(error.localizedDescription)", "unknown")
+                return
+            }
+            if self.importFiles.isEmpty, let stale = try? manager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                // file tạm còn sót của lần chạy trước (app bị tắt giữa chừng)
+                for old in stale {
+                    try? manager.removeItem(at: old)
+                }
+            }
+            let id = UUID().uuidString
+            let url = dir.appendingPathComponent("\(id).\(SpeechPlugin.safeExtension(name))")
+            guard manager.createFile(atPath: url.path, contents: nil) else {
+                call.reject("Không tạo được file tạm", "unknown")
+                return
+            }
+            self.importFiles[id] = url
+            call.resolve(["id": id])
+        }
+    }
+
+    @objc func fileChunk(_ call: CAPPluginCall) {
+        let id = call.getString("id") ?? ""
+        let data = call.getString("data") ?? ""
+        importQueue.async {
+            guard let url = self.importFiles[id] else {
+                call.reject("Không tìm thấy file tạm", "unknown")
+                return
+            }
+            guard let bytes = Data(base64Encoded: data, options: .ignoreUnknownCharacters) else {
+                call.reject("Dữ liệu file hỏng", "unknown")
+                return
+            }
+            do {
+                let handle = try FileHandle(forWritingTo: url)
+                defer { try? handle.close() }
+                _ = try handle.seekToEnd()
+                try handle.write(contentsOf: bytes)
+                call.resolve()
+            } catch {
+                call.reject("Không ghi được file tạm (bộ nhớ máy có thể đã đầy): \(error.localizedDescription)", "storage")
+            }
+        }
+    }
+
+    @objc func fileTranscribe(_ call: CAPPluginCall) {
+        let id = call.getString("id") ?? ""
+        let language = call.getString("language") ?? "vi-VN"
+        SFSpeechRecognizer.requestAuthorization { status in
+            guard status == .authorized else {
+                call.reject("Chưa được cấp quyền nhận dạng giọng nói", "permission")
+                return
+            }
+            self.importQueue.async {
+                guard let url = self.importFiles[id] else {
+                    call.reject("Không tìm thấy file tạm", "unknown")
+                    return
+                }
+                DispatchQueue.main.async {
+                    self.beginFile(id: id, url: url, language: language, call: call)
+                }
+            }
+        }
+    }
+
+    @objc func fileCancel(_ call: CAPPluginCall) {
+        let id = call.getString("id") ?? ""
+        DispatchQueue.main.async {
+            if let job = self.fileJob, job.id == id {
+                job.cancel()   // lời gọi fileTranscribe nhận lỗi "cancelled", file tạm được dọn sau đó
+            } else {
+                self.dropImport(id)
+            }
+            call.resolve()
+        }
+    }
+
+    private func beginFile(id: String, url: URL, language: String, call: CAPPluginCall) {
+        if fileJob != nil || active || stopping {
+            call.reject("Bộ nhận dạng đang bận", "busy")
+            return
+        }
+        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: language)) else {
+            call.reject("Máy chưa hỗ trợ nhận dạng ngôn ngữ này", "language")
+            return
+        }
+        let job = FileTranscriptionJob(id: id, url: url, recognizer: recognizer)
+        job.onPartial = { [weak self] text in
+            DispatchQueue.main.async { self?.notifyListeners("filePartial", data: ["id": id, "text": text]) }
+        }
+        job.onSegment = { [weak self] text in
+            DispatchQueue.main.async { self?.notifyListeners("fileSegment", data: ["id": id, "text": text]) }
+        }
+        job.onProgress = { [weak self] value in
+            DispatchQueue.main.async { self?.notifyListeners("fileProgress", data: ["id": id, "value": value]) }
+        }
+        fileJob = job
+        job.run { [weak self] outcome in
+            DispatchQueue.main.async {
+                if let self = self {
+                    if self.fileJob === job {
+                        self.fileJob = nil
+                    }
+                    self.dropImport(id)
+                }
+                switch outcome {
+                case .success(let text, let duration):
+                    call.resolve(["text": text, "duration": duration])
+                case .failure(let code, let message):
+                    call.reject(message, code)
+                }
+            }
+        }
+    }
+
+    private func dropImport(_ id: String) {
+        importQueue.async {
+            if let url = self.importFiles.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
+    private static func safeExtension(_ name: String) -> String {
+        let ext = (name as NSString).pathExtension.lowercased()
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789")
+        if ext.isEmpty || ext.count > 5 || ext.unicodeScalars.contains(where: { !allowed.contains($0) }) {
+            return "m4a"
+        }
+        return ext
+    }
+
     // MARK: - Phiên nhận dạng
 
     private func begin(language: String, call: CAPPluginCall) {
+        if fileJob != nil {
+            call.reject("Bộ nhận dạng đang chuyển một file ghi âm thành văn bản", "busy")
+            return
+        }
         if stopping {
             completeStop()   // phiên trước còn đang dừng dở: kết thúc nó trước
         }
@@ -424,3 +587,291 @@ public class SpeechPlugin: CAPPlugin, CAPBridgedPlugin {
         notifyListeners("state", data: ["listening": listening, "reason": reason])
     }
 }
+
+/// Chuyển một file ghi âm có sẵn thành văn bản bằng SFSpeechRecognizer, không cần máy chủ của ứng dụng.
+///
+/// Nhận dạng qua máy chủ của Apple giới hạn khoảng một phút âm thanh mỗi lượt, nên file được đọc theo từng đoạn
+/// dưới một phút, cắt ở chỗ lặng nhất trong mấy giây cuối của đoạn (không chặt đôi một từ), rồi nhận dạng lần lượt.
+/// Máy có nhận dạng trên thiết bị cho ngôn ngữ đó thì dùng luôn (không gửi âm thanh đi đâu).
+/// Chạy trên một hàng đợi riêng; mỗi đoạn chờ bộ nhận dạng trả kết quả cuối rồi mới sang đoạn sau.
+final class FileTranscriptionJob {
+    enum Outcome {
+        case success(String, Double)
+        case failure(String, String)
+    }
+
+    private enum WindowResult {
+        case text(String)
+        case cancelled
+        case failed(String, String)
+    }
+
+    /// Kết quả của một lượt nhận dạng, ghi từ hàng đợi của bộ nhận dạng, đọc từ hàng đợi của việc này.
+    private final class ResultBox {
+        private let lock = NSLock()
+        private var text = ""
+        private var error: Error?
+        private var done = false
+
+        func update(_ value: String) {
+            lock.lock()
+            text = value
+            lock.unlock()
+        }
+
+        func fail(_ value: Error) {
+            lock.lock()
+            error = value
+            lock.unlock()
+        }
+
+        /// true đúng một lần: lần đầu lượt nhận dạng kết thúc (kết quả cuối hoặc lỗi).
+        func markDone() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if done {
+                return false
+            }
+            done = true
+            return true
+        }
+
+        func snapshot() -> (String, Error?) {
+            lock.lock()
+            defer { lock.unlock() }
+            return (text, error)
+        }
+    }
+
+    static let windowSeconds: Double = 50       // dưới giới hạn khoảng một phút mỗi lượt
+    static let searchSeconds: Double = 8        // tìm chỗ lặng trong 8 giây cuối của đoạn
+    static let frameSeconds: Double = 0.1
+    static let sliceSeconds: Double = 1         // đưa âm thanh cho bộ nhận dạng từng giây một
+    static let windowTimeout: Double = 90
+
+    let id: String
+    var onPartial: ((String) -> Void)?
+    var onSegment: ((String) -> Void)?
+    var onProgress: ((Double) -> Void)?
+
+    private let url: URL
+    private let recognizer: SFSpeechRecognizer
+    private let queue = DispatchQueue(label: "vn.mictomindmap.file-transcription")
+    private let lock = NSLock()
+    private var cancelled = false
+    private var task: SFSpeechRecognitionTask?
+    private var wake: DispatchSemaphore?
+
+    init(id: String, url: URL, recognizer: SFSpeechRecognizer) {
+        self.id = id
+        self.url = url
+        self.recognizer = recognizer
+    }
+
+    func run(completion: @escaping (Outcome) -> Void) {
+        queue.async {
+            completion(self.transcribe())
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let running = task
+        let waiting = wake
+        lock.unlock()
+        running?.cancel()
+        waiting?.signal()
+    }
+
+    private var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    private func transcribe() -> Outcome {
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            return .failure("format", "Không đọc được file âm thanh này")
+        }
+        let format = file.processingFormat
+        let rate = format.sampleRate
+        let total = file.length
+        guard rate > 0, total > 0, format.channelCount > 0 else {
+            return .failure("format", "File âm thanh rỗng hoặc hỏng")
+        }
+        let onDevice = recognizer.supportsOnDeviceRecognition
+        let windowFrames = AVAudioFramePosition(FileTranscriptionJob.windowSeconds * rate)
+        var texts: [String] = []
+        var position: AVAudioFramePosition = 0
+        var failures = 0
+        while position < total {
+            if isCancelled {
+                return .failure("cancelled", "Đã hủy")
+            }
+            let wanted = AVAudioFrameCount(min(windowFrames, total - position))
+            guard let window = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: wanted) else {
+                return .failure("unknown", "Không đủ bộ nhớ để đọc file")
+            }
+            do {
+                file.framePosition = position
+                try file.read(into: window, frameCount: wanted)
+            } catch {
+                return .failure(texts.isEmpty ? "format" : "unknown", "Không đọc được file âm thanh này")
+            }
+            if window.frameLength == 0 {
+                break
+            }
+            let isLast = position + AVAudioFramePosition(window.frameLength) >= total
+            let cut = isLast ? window.frameLength : quietestCut(window)
+            switch recognizeWindow(window, frames: cut, onDevice: onDevice) {
+            case .text(let text):
+                failures = 0
+                if !text.isEmpty {
+                    texts.append(text)
+                    onSegment?(text)
+                }
+            case .cancelled:
+                return .failure("cancelled", "Đã hủy")
+            case .failed(let code, let message):
+                failures += 1
+                if failures >= 2 {
+                    return .failure(code, message)
+                }
+                Thread.sleep(forTimeInterval: 1)
+                continue   // thử lại đúng đoạn này một lần
+            }
+            position += AVAudioFramePosition(cut)
+            onProgress?(min(1, Double(position) / Double(total)))
+        }
+        return .success(texts.joined(separator: " "), Double(total) / rate)
+    }
+
+    /// Vị trí cắt đoạn: giữa khung 100 ms lặng nhất trong mấy giây cuối của đoạn.
+    private func quietestCut(_ buffer: AVAudioPCMBuffer) -> AVAudioFrameCount {
+        let length = Int(buffer.frameLength)
+        guard let data = buffer.floatChannelData, length > 0 else {
+            return buffer.frameLength
+        }
+        let rate = buffer.format.sampleRate
+        let frame = max(1, Int(FileTranscriptionJob.frameSeconds * rate))
+        let channels = Int(buffer.format.channelCount)
+        var start = max(0, length - Int(FileTranscriptionJob.searchSeconds * rate))
+        var bestStart = max(0, length - frame)
+        var bestEnergy = Float.greatestFiniteMagnitude
+        while start + frame <= length {
+            var energy: Float = 0
+            for channel in 0..<channels {
+                let samples = data[channel]
+                for index in start..<(start + frame) {
+                    let value = samples[index]
+                    energy += value * value
+                }
+            }
+            if energy < bestEnergy {
+                bestEnergy = energy
+                bestStart = start
+            }
+            start += frame
+        }
+        let cut = min(length, bestStart + frame / 2)
+        return AVAudioFrameCount(max(1, cut))
+    }
+
+    private func slice(_ source: AVAudioPCMBuffer, from start: AVAudioFrameCount, count: AVAudioFrameCount) -> AVAudioPCMBuffer? {
+        guard let piece = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: count),
+              let from = source.floatChannelData, let to = piece.floatChannelData else {
+            return nil
+        }
+        for channel in 0..<Int(source.format.channelCount) {
+            memcpy(to[channel], from[channel].advanced(by: Int(start)), Int(count) * MemoryLayout<Float>.size)
+        }
+        piece.frameLength = count
+        return piece
+    }
+
+    private func recognizeWindow(_ window: AVAudioPCMBuffer, frames: AVAudioFrameCount, onDevice: Bool) -> WindowResult {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.taskHint = .dictation
+        if onDevice {
+            request.requiresOnDeviceRecognition = true
+        }
+        if #available(iOS 16.0, *) {
+            request.addsPunctuation = true
+        }
+        let done = DispatchSemaphore(value: 0)
+        let box = ResultBox()
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            return .cancelled
+        }
+        wake = done
+        let running = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            if let result = result {
+                let text = result.bestTranscription.formattedString
+                box.update(text)
+                if result.isFinal {
+                    if box.markDone() {
+                        done.signal()
+                    }
+                } else {
+                    self?.onPartial?(text)
+                }
+            }
+            if let error = error {
+                box.fail(error)
+                if box.markDone() {
+                    done.signal()
+                }
+            }
+        }
+        task = running
+        lock.unlock()
+
+        let step = AVAudioFrameCount(max(1, FileTranscriptionJob.sliceSeconds * window.format.sampleRate))
+        var offset: AVAudioFrameCount = 0
+        while offset < frames {
+            let count = min(step, frames - offset)
+            if let piece = slice(window, from: offset, count: count) {
+                request.append(piece)
+            }
+            offset += count
+        }
+        request.endAudio()
+
+        let waited = done.wait(timeout: .now() + FileTranscriptionJob.windowTimeout)
+        lock.lock()
+        let wasCancelled = cancelled
+        task = nil
+        wake = nil
+        lock.unlock()
+        if wasCancelled {
+            running.cancel()
+            return .cancelled
+        }
+        let (text, error) = box.snapshot()
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if waited == .timedOut {
+            running.cancel()
+            return clean.isEmpty ? .failed("unknown", "Nhận dạng một đoạn của file quá lâu") : .text(clean)
+        }
+        if let error = error, clean.isEmpty {
+            let ns = error as NSError
+            // 1110: không có lời nói trong đoạn này; 203 / 1107: hết lượt mà không ra chữ
+            if ns.domain == "kAFAssistantErrorDomain" && (ns.code == 1110 || ns.code == 203 || ns.code == 1107) {
+                return .text("")
+            }
+            if !recognizer.isAvailable {
+                return .failed("network", "Dịch vụ nhận dạng giọng nói không kết nối được")
+            }
+            return .failed("unknown", error.localizedDescription)
+        }
+        return .text(clean)
+    }
+}
+

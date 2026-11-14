@@ -182,3 +182,15 @@ def test_device_speech_text_is_a_draft_that_whisper_replaces(client):
     m = client.get(f"/api/meetings/{other['id']}").json()
     assert len(fake.calls) == 1 and m["transcript_source"] == "device+edited" and m["transcript"].endswith("Câu thêm tay.")
 
+
+def test_text_recognized_from_an_imported_file_is_redone_by_whisper(client):
+    """Văn bản do thiết bị nhận dạng từ file ("file") cũng là bản nháp: máy chủ có Whisper thì nhận dạng lại."""
+    fake = FakeTranscriber(text=VI_TRANSCRIPT)
+    client.app.state.pipeline.transcriber = fake
+    meeting = client.post("/api/meetings", json={"title": "File nhập"}).json()
+    client.post(f"/api/meetings/{meeting['id']}/audio", files={"audio": ("hop.mp3", io.BytesIO(b"ID3fake"), "audio/mpeg")},
+                data={"live_transcript": "bản nháp của điện thoại", "transcript_source": "file"})
+    client.post(f"/api/meetings/{meeting['id']}/process")
+    m = client.get(f"/api/meetings/{meeting['id']}").json()
+    assert len(fake.calls) == 1 and m["transcript"] == VI_TRANSCRIPT and m["transcript_source"] == "whisper:small"
+

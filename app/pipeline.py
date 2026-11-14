@@ -52,8 +52,9 @@ class Pipeline:
         segments = meeting.get("segments") or []
         duration = meeting.get("duration_sec")
 
-        # văn bản nhận dạng trực tiếp lúc nói ("browser"/"device") chỉ là bản nháp: có Whisper thì nhận dạng lại từ file
-        if audio_path and self.transcriber.available() and (force or not has_transcript or source in ("browser", "device")):
+        # văn bản do thiết bị nhận dạng ("browser"/"device" lúc nói, "file" từ file có sẵn) chỉ là bản nháp:
+        # có Whisper thì nhận dạng lại từ file âm thanh
+        if audio_path and self.transcriber.available() and (force or not has_transcript or source in ("browser", "device", "file")):
             self.db.update_meeting(meeting_id, status="transcribing", error=None)
             hot_words = self.glossary.hot_words()
             try:

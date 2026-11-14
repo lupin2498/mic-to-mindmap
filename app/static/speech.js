@@ -11,7 +11,16 @@
      const session = M2MSpeech.create({ lang: 'vi-VN', onPartial, onFinal, onState, onError, onLevel });
      await session.start();  ...  await session.pause(); await session.resume();  ...  await session.stop();
    onPartial(text): phần đang nói dở (thay thế phần dở trước đó). onFinal(text): một câu/đoạn đã chốt.
-   onError({code, message, fatal}): fatal = phiên đã dừng hẳn. */
+   onError({code, message, fatal}): fatal = phiên đã dừng hẳn.
+
+   Nhận dạng từ FILE GHI ÂM CÓ SẴN (cũng không cần máy chủ):
+     const info = await M2MSpeech.fileSupport();     // {provider: 'native' | 'web' | null, realtime}
+     const job = M2MSpeech.transcribeFile(file, { lang, provider: info.provider, onPartial, onFinal, onProgress });
+     const { text } = await job.promise;             // job.cancel() để hủy; lỗi có err.code và err.partialText
+   - "native": app chuyển file sang plugin M2MSpeech (từng khúc base64), plugin giải mã rồi đưa cho bộ nhận dạng của
+     máy (Android 13+: SpeechRecognizer đọc âm thanh từ file; iOS: SFSpeechRecognizer theo từng đoạn dưới một phút);
+   - "web": Chrome/Edge 133+ nhận dạng từ một MediaStreamTrack: trang phát file trong im lặng qua Web Audio và đưa
+     luồng đó cho Web Speech API, nên mất đúng bằng thời lượng file. */
 (function (root) {
   'use strict';
 
@@ -30,7 +39,15 @@
     unavailable: 'Thiết bị hoặc trình duyệt này không có dịch vụ nhận dạng giọng nói.',
     background: 'Nhận dạng giọng nói tạm dừng vì ứng dụng không còn ở phía trước.',
     unknown: 'Nhận dạng giọng nói gặp lỗi và đã dừng.',
+    // nhận dạng từ file ghi âm có sẵn
+    unsupported: 'Máy này chưa chuyển được file ghi âm thành văn bản: bộ nhận dạng giọng nói của máy không nhận âm thanh từ file. Hãy ghi trực tiếp bằng nút ghi âm hoặc dùng máy chủ có Whisper.',
+    format: 'Không đọc được file âm thanh này. Hãy dùng file m4a, mp3, wav, aac hoặc ogg.',
+    cancelled: 'Đã hủy nhận dạng file.',
+    busy: 'Bộ nhận dạng giọng nói đang bận (đang ghi âm hoặc đang nhận dạng file khác). Hãy thử lại sau.',
   };
+  const FILE_CHUNK_BYTES = 512 * 1024;     // mỗi lần chuyển file sang plugin của app
+  const FILE_END_GRACE_MS = 1200;          // file phát hết: chờ bộ nhận dạng trả nốt câu cuối
+  const FILE_END_TIMEOUT_MS = 6000;
 
   function userAgent() {
     return (root.navigator && root.navigator.userAgent) || '';
@@ -328,6 +345,310 @@
     throw makeError('unavailable');
   }
 
+  // ------------------------------------------------- nhận dạng từ file ghi âm có sẵn
+  function clamp01(value) {
+    const v = Number(value);
+    return isFinite(v) ? Math.max(0, Math.min(1, v)) : 0;
+  }
+  function nativeFilePlugin() {
+    const plugin = nativePlugin();
+    return plugin && typeof plugin.fileTranscribe === 'function' ? plugin : null;
+  }
+  let trackProbe = null;
+  /* Chrome/Edge 133+ nhận dạng được từ một MediaStreamTrack (SpeechRecognition.start(track)). Bản cũ hơn và Safari bỏ
+     qua đối số rồi mở micro, nên phải dò cẩn thận: bản hỗ trợ ném TypeError ngay khi đối số không phải track. */
+  function webTrackSupport() {
+    if (trackProbe !== null) return trackProbe;
+    trackProbe = false;
+    const SR = webCtor();
+    const Ctx = root.AudioContext || root.webkitAudioContext;
+    if (!SR || !Ctx || typeof root.MediaStreamTrack === 'undefined' || !root.document || isIOS()) return false;
+    const version = /Chrom(?:e|ium)\/(\d+)/.exec(userAgent());
+    if (!version || Number(version[1]) < 133) return false;
+    let probe = null;
+    try {
+      probe = new SR();
+      probe.start({});
+    } catch (err) {
+      trackProbe = !!err && err.name === 'TypeError';
+      return trackProbe;
+    }
+    try { probe.abort(); } catch (_) { /* đã dừng */ }   // không ném lỗi: bản này đã mở micro, tắt ngay
+    return false;
+  }
+  function webFileSupport(reason) {
+    if (webTrackSupport()) return { provider: 'web', label: 'trình duyệt', realtime: true };
+    return { provider: null, label: '', realtime: false, reason: reason || '' };
+  }
+  /* Máy này chuyển được file ghi âm có sẵn thành văn bản bằng cách nào (không tính Whisper trên máy chủ). */
+  function fileSupport() {
+    const plugin = nativeFilePlugin();
+    if (!plugin) return Promise.resolve(webFileSupport());
+    return Promise.resolve()
+      .then(() => (typeof plugin.fileSupport === 'function' ? plugin.fileSupport() : { available: true }))
+      .then((info) => (info && info.available
+        ? { provider: 'native', label: 'thiết bị', realtime: false, onDevice: !!info.onDevice }
+        : webFileSupport(info && info.reason)), () => webFileSupport());
+  }
+  function readBase64(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new root.FileReader();
+      reader.onload = () => {
+        const url = String(reader.result || '');
+        const comma = url.indexOf(',');
+        resolve(comma >= 0 ? url.slice(comma + 1) : '');
+      };
+      reader.onerror = () => reject(reader.error || new Error('không đọc được file'));
+      reader.readAsDataURL(blob);
+    });
+  }
+  function fileError(code, detail, segments) {
+    const error = makeError(MESSAGES[code] ? code : 'unknown', detail);
+    error.partialText = segments.join(' ');
+    return error;
+  }
+
+  function transcribeFileNative(file, opts) {
+    const plugin = nativeFilePlugin();
+    const segments = [];
+    const handles = [];
+    let id = null;
+    let cancelled = false;
+    function listen(name, fn) {
+      try {
+        handles.push(plugin.addListener(name, (data) => { if (data && id && data.id === id) fn(data); }));
+      } catch (err) { if (root.console) root.console.error(err); }
+    }
+    function unlisten() {
+      for (const handle of handles.splice(0)) {
+        Promise.resolve(handle).then((h) => { if (h && typeof h.remove === 'function') h.remove(); }).catch(() => {});
+      }
+    }
+    function release() {
+      if (id) { const old = id; Promise.resolve().then(() => plugin.fileCancel({ id: old })).catch(() => {}); }
+    }
+    listen('fileProgress', (data) => call(opts.onProgress, { phase: 'recognize', value: clamp01(data.value) }));
+    listen('filePartial', (data) => call(opts.onPartial, String(data.text || '').trim()));
+    listen('fileSegment', (data) => {
+      const text = String(data.text || '').trim();
+      if (text) { segments.push(text); call(opts.onFinal, text); }
+      call(opts.onPartial, '');
+    });
+    const promise = (async () => {
+      const begun = await plugin.fileBegin({ name: file.name || 'audio', size: file.size, mime: file.type || '' });
+      id = begun && begun.id ? String(begun.id) : null;
+      if (!id) throw makeError('unknown', 'plugin không mở được file tạm');
+      for (let offset = 0; offset < file.size; offset += FILE_CHUNK_BYTES) {
+        if (cancelled) throw makeError('cancelled');
+        const data = await readBase64(file.slice(offset, offset + FILE_CHUNK_BYTES));
+        await plugin.fileChunk({ id, data });
+        call(opts.onProgress, { phase: 'transfer', value: Math.min(1, (offset + FILE_CHUNK_BYTES) / file.size) });
+      }
+      if (cancelled) throw makeError('cancelled');
+      call(opts.onProgress, { phase: 'recognize', value: 0 });
+      const result = await plugin.fileTranscribe({ id, language: opts.lang });
+      const text = String((result && result.text) || '').trim() || segments.join(' ');
+      return { text, segments: segments.slice(), duration: Number(result && result.duration) || 0 };
+    })().then((result) => {
+      unlisten();
+      release();
+      return result;
+    }, (err) => {
+      unlisten();
+      release();
+      const code = cancelled ? 'cancelled' : (err && err.code) || 'unknown';
+      throw fileError(code, err && err.message, segments);
+    });
+    return {
+      provider: 'native',
+      promise,
+      cancel() {
+        if (cancelled) return;
+        cancelled = true;
+        release();
+      },
+    };
+  }
+
+  function transcribeFileWeb(file, opts) {
+    const SR = webCtor();
+    const Ctx = root.AudioContext || root.webkitAudioContext;
+    const segments = [];
+    let finished = false;
+    let settle = null;
+    let audio = null, ctx = null, track = null, url = '', rec = null;
+    let pending = '';
+    let timers = [];
+    let networkErrors = 0, quickEnds = 0, startedAt = 0;
+    const later = (fn, ms) => { timers.push(setTimeout(fn, ms)); };
+
+    function cleanup() {
+      finished = true;
+      timers.forEach(clearTimeout);
+      timers = [];
+      if (rec) { const r = rec; rec = null; try { r.abort(); } catch (_) { /* đã dừng */ } }
+      if (audio) {
+        audio.onerror = null; audio.onended = null; audio.ontimeupdate = null; audio.onloadedmetadata = null;
+        try { audio.pause(); } catch (_) { /* đã dừng */ }
+      }
+      if (track) { try { track.stop(); } catch (_) { /* đã dừng */ } }
+      if (ctx) { ctx.close().catch(() => {}); ctx = null; }
+      if (url) { root.URL.revokeObjectURL(url); url = ''; }
+    }
+    function flushPending() {
+      const text = pending.trim();
+      pending = '';
+      if (text) {
+        segments.push(text);
+        call(opts.onFinal, text);
+        call(opts.onPartial, '');
+      }
+    }
+    function done() {
+      if (finished) return;
+      flushPending();
+      const duration = audio && isFinite(audio.duration) ? audio.duration : 0;
+      cleanup();
+      settle.resolve({ text: segments.join(' '), segments: segments.slice(), duration });
+    }
+    function fail(code, detail) {
+      if (finished) return;
+      flushPending();
+      cleanup();
+      settle.reject(fileError(code, detail, segments));
+    }
+    function playAudio() {
+      if (finished || !audio || audio.ended || !audio.paused) return;
+      const playing = audio.play();
+      if (playing && typeof playing.catch === 'function') {
+        playing.catch((err) => { if (!finished && audio && !audio.ended) fail('unknown', err && err.message); });
+      }
+    }
+    function startRec() {
+      if (finished) return;
+      const r = new SR();
+      r.continuous = true;
+      r.interimResults = true;
+      r.lang = opts.lang;
+      try { r.maxAlternatives = 1; } catch (_) { /* thuộc tính không bắt buộc */ }
+      // bộ nhận dạng sẵn sàng mới phát file, để câu đầu không bị mất
+      r.onstart = () => { if (rec === r) playAudio(); };
+      r.onresult = (event) => {
+        if (rec !== r) return;
+        quickEnds = 0;
+        networkErrors = 0;
+        let interim = '';
+        const results = event.results || [];
+        for (let i = event.resultIndex || 0; i < results.length; i++) {
+          const result = results[i];
+          const text = result && result[0] ? String(result[0].transcript || '') : '';
+          if (result && result.isFinal) {
+            const final = text.trim();
+            if (final) { segments.push(final); call(opts.onFinal, final); }
+          } else {
+            interim += text;
+          }
+        }
+        pending = interim;
+        call(opts.onPartial, interim.trim());
+      };
+      r.onerror = (event) => {
+        if (rec !== r) return;
+        const code = event && event.error;
+        if (code === 'no-speech' || code === 'aborted') return;
+        if (code === 'not-allowed' || code === 'service-not-allowed') { fail('permission'); return; }
+        if (code === 'language-not-supported') { fail('language'); return; }
+        if (code === 'audio-capture') { fail('unsupported'); return; }
+        if (code === 'network') {
+          networkErrors += 1;
+          if (networkErrors >= MAX_NETWORK_ERRORS) fail('network');
+        }
+      };
+      r.onend = () => {
+        if (rec !== r) return;
+        rec = null;
+        flushPending();
+        if (finished) return;
+        if (audio.ended) { done(); return; }
+        // dịch vụ tự ngắt giữa chừng: tạm dừng phát, mở lượt nghe mới rồi phát tiếp để không mất câu nào
+        try { audio.pause(); } catch (_) { /* đã dừng */ }
+        quickEnds = Date.now() - startedAt < 1000 ? quickEnds + 1 : 0;
+        if (quickEnds >= MAX_QUICK_ENDS) { fail('unknown', 'dịch vụ tắt ngay sau khi bật'); return; }
+        later(startRec, quickEnds ? 400 * quickEnds : RESTART_DELAY_MS);
+      };
+      rec = r;
+      startedAt = Date.now();
+      try {
+        r.start(track);
+      } catch (err) {
+        rec = null;
+        fail('unsupported', err && err.message);
+        return;
+      }
+      later(playAudio, 800);   // phòng khi dịch vụ không báo onstart
+    }
+    const promise = new Promise((resolve, reject) => {
+      settle = { resolve, reject };
+      if (!SR || !Ctx || !root.document) { fail('unsupported'); return; }
+      try {
+        url = root.URL.createObjectURL(file);
+      } catch (err) {
+        fail('format', err && err.message);
+        return;
+      }
+      audio = root.document.createElement('audio');
+      audio.preload = 'auto';
+      audio.onerror = () => fail('format');
+      audio.onloadedmetadata = () => {
+        if (finished) return;
+        try {
+          ctx = new Ctx();
+          const source = ctx.createMediaElementSource(audio);
+          const dest = ctx.createMediaStreamDestination();
+          source.connect(dest);   // không nối ra loa: nhận dạng trong im lặng
+          track = dest.stream.getAudioTracks()[0] || null;
+          if (ctx.state === 'suspended' && typeof ctx.resume === 'function') ctx.resume().catch(() => {});
+        } catch (err) {
+          fail('unsupported', err && err.message);
+          return;
+        }
+        if (!track) { fail('unsupported'); return; }
+        startRec();
+      };
+      audio.ontimeupdate = () => {
+        if (finished || !isFinite(audio.duration) || audio.duration <= 0) return;
+        call(opts.onProgress, { phase: 'recognize', value: clamp01(audio.currentTime / audio.duration),
+          current: audio.currentTime, duration: audio.duration });
+      };
+      audio.onended = () => {
+        if (finished) return;
+        call(opts.onProgress, { phase: 'recognize', value: 1 });
+        later(() => {
+          if (!rec) { done(); return; }
+          try { rec.stop(); } catch (_) { done(); }
+        }, FILE_END_GRACE_MS);
+        later(done, FILE_END_TIMEOUT_MS);   // dịch vụ không báo dừng: thôi chờ
+      };
+      audio.src = url;
+    });
+    return {
+      provider: 'web',
+      promise,
+      cancel() { fail('cancelled'); },
+    };
+  }
+
+  /* Chuyển một file ghi âm có sẵn thành văn bản. Trả về {provider, promise, cancel}. options.provider: kết quả của
+     fileSupport() (bỏ trống thì tự chọn). onFinal(text): một đoạn đã chốt; onPartial(text): đoạn đang dở;
+     onProgress({phase: 'transfer' | 'recognize', value 0..1, current?, duration?}). */
+  function transcribeFile(file, options) {
+    const opts = Object.assign({ lang: 'vi-VN', provider: null }, options || {});
+    const provider = opts.provider || (nativeFilePlugin() ? 'native' : webTrackSupport() ? 'web' : null);
+    if (provider === 'native' && nativeFilePlugin()) return transcribeFileNative(file, opts);
+    if (provider === 'web' && webCtor()) return transcribeFileWeb(file, opts);
+    return { provider: null, promise: Promise.reject(fileError('unsupported', '', [])), cancel() {} };
+  }
+
   // ------------------------------------------------------------ giữ màn hình sáng
   let wakeLock = null;
   let wantAwake = false;
@@ -362,5 +683,5 @@
     }
   }
 
-  root.M2MSpeech = { support, create, langTag, formatUtterance, keepAwake, describe, MESSAGES };
+  root.M2MSpeech = { support, create, langTag, formatUtterance, keepAwake, describe, fileSupport, transcribeFile, MESSAGES };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

@@ -83,6 +83,12 @@ def test_android_manifest_permissions_and_cleartext():
     assert "android.speech.RecognitionService" in queried
 
 
+PLUGIN_METHODS = {"available", "start", "stop", "keepAwake", "fileSupport", "fileBegin", "fileChunk", "fileTranscribe",
+                  "fileCancel"}
+LIVE_EVENTS = {"partial", "final", "state", "error", "level"}
+FILE_EVENTS = {"fileProgress", "filePartial", "fileSegment"}
+
+
 def test_android_registers_the_speech_plugin():
     java = MOBILE / "android" / "app" / "src" / "main" / "java" / "vn" / "mictomindmap" / "app"
     activity = (java / "MainActivity.java").read_text(encoding="utf-8")
@@ -92,17 +98,23 @@ def test_android_registers_the_speech_plugin():
     assert '@CapacitorPlugin(' in plugin and 'name = "M2MSpeech"' in plugin
     # đúng các phương thức và sự kiện mà app/static/speech.js dùng
     methods = set(re.findall(r"@PluginMethod\s+public void (\w+)\(", plugin))
-    assert methods == {"available", "start", "stop", "keepAwake"}
-    events = set(re.findall(r'notifyListeners\("(\w+)"', plugin))
-    assert events == {"partial", "final", "state", "error", "level"}
+    assert methods == PLUGIN_METHODS
+    events = set(re.findall(r'(?:notifyListeners|notifyFile)\("(\w+)"', plugin))
+    assert events == LIVE_EVENTS | FILE_EVENTS
     speech_js = (ROOT / "app" / "static" / "speech.js").read_text(encoding="utf-8")
-    assert set(re.findall(r"on\('(\w+)'", speech_js)) == events
+    assert set(re.findall(r"on\('(\w+)'", speech_js)) == LIVE_EVENTS
+    assert set(re.findall(r"listen\('(\w+)'", speech_js)) == FILE_EVENTS
     for method in methods - {"available"}:
         assert f"plugin.{method}(" in speech_js, method
-    # vòng lặp nhận dạng không được phụ thuộc Android để còn kiểm được trên JVM
-    loop = (java / "SpeechLoop.java").read_text(encoding="utf-8")
-    assert "import android" not in loop and "import com.getcapacitor" not in loop
-    assert (MOBILE / "android" / "app" / "src" / "test" / "java" / "vn" / "mictomindmap" / "app" / "SpeechLoopTest.java").is_file()
+    # phần logic không được phụ thuộc Android để còn kiểm được trên JVM
+    tests = MOBILE / "android" / "app" / "src" / "test" / "java" / "vn" / "mictomindmap" / "app"
+    for name in ("SpeechLoop", "FileSession", "FilePump", "PcmConverter"):
+        source = (java / f"{name}.java").read_text(encoding="utf-8")
+        assert "import android" not in source and "import com.getcapacitor" not in source, name
+        assert (tests / f"{name}Test.java").is_file(), name
+    # nhận dạng từ file chỉ có từ Android 13: lớp dùng API đó phải khai báo
+    assert "@TargetApi(Build.VERSION_CODES.TIRAMISU)" in (java / "FileRecognizer.java").read_text(encoding="utf-8")
+    assert "Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU" in plugin
 
 
 def test_ios_registers_the_speech_plugin():
@@ -111,8 +123,8 @@ def test_ios_registers_the_speech_plugin():
     assert 'public let jsName = "M2MSpeech"' in plugin and "CAPBridgedPlugin" in plugin
     declared = set(re.findall(r'CAPPluginMethod\(name: "(\w+)"', plugin))
     implemented = set(re.findall(r"@objc func (\w+)\(_ call: CAPPluginCall\)", plugin))
-    assert declared == implemented == {"available", "start", "stop", "keepAwake"}
-    assert set(re.findall(r'notifyListeners\("(\w+)"', plugin)) == {"partial", "final", "state", "error", "level"}
+    assert declared == implemented == PLUGIN_METHODS
+    assert set(re.findall(r'notifyListeners\("(\w+)"', plugin)) == LIVE_EVENTS | FILE_EVENTS
     controller = (app / "MainViewController.swift").read_text(encoding="utf-8")
     assert "registerPluginInstance(SpeechPlugin())" in controller
     storyboard = ET.parse(app / "Base.lproj" / "Main.storyboard").getroot()

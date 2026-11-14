@@ -7,12 +7,14 @@ Bản di động là vỏ [Capacitor](https://capacitorjs.com) bọc giao diện
 1. Cài ứng dụng (xem bên dưới) và mở app.
 2. Nhấn **nút đỏ** rồi nói. Lần đầu máy hỏi quyền micro; iOS hỏi thêm quyền nhận dạng giọng nói. Văn bản hiện ra ngay khi nói, bản tóm tắt và sơ đồ tư duy xem trước cập nhật theo.
 3. Nhấn **⏹ Dừng**: app tự đặt tiêu đề, tóm tắt, tách quyết định, việc cần làm và vẽ sơ đồ tư duy. Bỏ chọn "Tự động tóm tắt và vẽ sơ đồ tư duy khi dừng ghi" nếu muốn xem lại văn bản trước.
+4. Đã có sẵn file ghi âm (máy ghi âm của điện thoại, Zalo, ghi âm cuộc gọi...)? Nhấn **📂 Nhập bản ghi âm có sẵn** và chọn file: bộ nhận dạng của máy chuyển file thành văn bản ngay trên điện thoại (thanh tiến trình, nhấn **✕ Hủy** để dừng), xong thì tự tóm tắt và vẽ sơ đồ tư duy. File được lưu kèm để nghe lại. Android cần bản 13 trở lên.
 
 Những điều nên biết:
 
 - Chuyển giọng nói thành văn bản là việc của **bộ nhận dạng có sẵn trên máy** (Google trên Android, Apple trên iOS). Trên Android, ứng dụng Google cũng phải được cấp quyền micro (*Cài đặt → Ứng dụng → Google → Quyền*); thiếu thì app báo đúng điều đó. Thường cần mạng; máy đã tải gói nhận dạng ngoại tuyến cho ngôn ngữ đó thì không cần (Android: *Cài đặt → Hệ thống → Ngôn ngữ → Nhận dạng giọng nói trên thiết bị* hoặc trong ứng dụng Google; iOS: tùy đời máy và ngôn ngữ). Máy Android không có dịch vụ nhận dạng nào (một số máy không có ứng dụng Google) thì app báo rõ và vẫn nhận văn bản dán tay.
 - Giữ app ở phía trước trong lúc ghi: hệ điều hành không cho nhận dạng khi app chạy nền. App giữ màn hình sáng, tạm ngừng khi bị che và nghe tiếp khi quay lại.
-- Micro của điện thoại chỉ cho một bên dùng, nên khi nhận dạng trực tiếp app **không lưu kèm file ghi âm**.
+- Micro của điện thoại chỉ cho một bên dùng, nên khi nhận dạng trực tiếp app **không lưu kèm file ghi âm**. File nhập vào thì được lưu.
+- Nhập file trên Android: app ưu tiên bộ nhận dạng chạy trên máy (không gửi âm thanh đi). Nếu không dịch vụ nào của máy nhận âm thanh từ file, app báo rõ; khi đó hãy dùng máy chủ có Whisper. File dài thì mất vài phút (khoảng 3 đến 8 lần nhanh hơn thời gian thật, tùy dịch vụ).
 - Dữ liệu nằm trong bộ nhớ của app; gỡ app là mất. Dùng nút xuất Markdown/SVG/PNG để giữ lại.
 
 ### Dùng thêm AI (tùy chọn)
@@ -56,6 +58,9 @@ npx cap open ios           # mở Xcode, chọn Team, Run
 - **Plugin `M2MSpeech`** (cùng giao diện ở hai nền tảng: `available`, `start`, `stop`, `keepAwake`; sự kiện `partial`, `final`, `state`, `error`, `level`):
   - Android: `SpeechPlugin.java` dùng `SpeechRecognizer` ở chế độ đọc chính tả. `SpeechLoop.java` là vòng lặp không phụ thuộc Android (kiểm được trên JVM bằng `SpeechLoopTest`): nghe lại sau mỗi câu, coi im lặng là bình thường, giữ phần đang nói dở khi bộ nhận dạng dừng, mất mạng thì thử gói ngoại tuyến rồi mới báo lỗi, bộ nhận dạng treo thì tạo lại. Một máy có thể có vài dịch vụ nhận dạng và dịch vụ mặc định của vài hãng không nhận tiếng Việt, nên app thử dịch vụ của ứng dụng Google trước, rồi dịch vụ mặc định, rồi các dịch vụ còn lại, hết cách mới báo lỗi. Trong lúc ghi app tắt tiếng "tít" của bộ nhận dạng rồi trả lại âm lượng.
   - iOS: `SpeechPlugin.swift` dùng `SFSpeechRecognizer` + `AVAudioEngine`, chốt câu ở mỗi chỗ ngắt hơi rồi mở lượt mới để vượt giới hạn khoảng một phút mỗi lượt của Apple.
+  - Nhận dạng từ file (`fileSupport`, `fileBegin`, `fileChunk`, `fileTranscribe`, `fileCancel`; sự kiện `fileProgress`, `filePartial`, `fileSegment`): giao diện chuyển file sang plugin từng khúc 512 KB (base64), plugin ghi ra file tạm rồi:
+    - Android 13+ (`FileRecognizer.java`): `AudioDecoder` giải mã bằng MediaExtractor + MediaCodec, `PcmConverter` đổi về PCM 16 kHz một kênh, `FilePump` bơm vào đường ống đưa cho `SpeechRecognizer` qua `EXTRA_AUDIO_SOURCE` (chế độ chia đoạn `EXTRA_SEGMENTED_SESSION`). `FileSession` (thuần Java, có test JVM) điều phối: bộ nhận dạng dừng giữa chừng thì mở phiên mới đọc tiếp; bộ nhận dạng không đọc đường ống (nghe micro thay vào đó) thì sau 8 giây phát hiện được và đổi dịch vụ; thử lần lượt bộ nhận dạng trên máy, ứng dụng Google, dịch vụ mặc định.
+    - iOS (`FileTranscriptionJob`): đọc file bằng `AVAudioFile` theo từng đoạn 50 giây, cắt ở chỗ lặng nhất của 8 giây cuối, nhận dạng từng đoạn bằng `SFSpeechAudioBufferRecognitionRequest` (dùng nhận dạng trên máy nếu có).
   - Vì sao không dùng plugin cộng đồng: bản có sẵn không nghe liên tục, nuốt lỗi và không hỗ trợ Swift Package Manager mà dự án iOS này dùng.
 - **Quyền**: Android `RECORD_AUDIO` và khai báo `<queries>` tới `android.speech.RecognitionService` (Android 11+ cần mới thấy dịch vụ nhận dạng); iOS `NSMicrophoneUsageDescription` và `NSSpeechRecognitionUsageDescription`.
 - `capacitor.config.json`: `androidScheme: http` để WebView có origin `http://localhost` (vẫn là secure context nên dùng được micro) và gọi API HTTP trong LAN không bị chặn mixed-content. Android bật `usesCleartextTraffic`, iOS bật `NSAllowsArbitraryLoads`/`NSAllowsLocalNetworking`. Chỉ cần tới khi nối máy chủ AI.

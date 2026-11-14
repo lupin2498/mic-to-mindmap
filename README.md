@@ -8,7 +8,8 @@
 - ✨ **Tự tóm tắt, không cần AI**: một bộ máy thuật toán rút ý chính, quyết định, việc cần làm (việc gì / ai / hạn nào), từ khóa và đặt luôn tiêu đề. Bản xem trước cập nhật ngay khi bạn còn đang nói.
 - 🧠 **Tự vẽ sơ đồ tư duy** (SVG tương tác): nhánh theo chủ đề, nhánh Quyết định, nhánh Việc cần làm; kéo/zoom (chuột, một ngón, chụm hai ngón), thu gọn nhánh, sửa chữ, thêm/xóa nút, xuất SVG/PNG, xuất biên bản Markdown.
 - 📱 **Chạy độc lập trên điện thoại**: app Android/iOS tự xử lý và lưu mọi thứ ngay trên máy, không cần máy chủ, không cần mạng LAN.
-- 📝 Vẫn nhận **file ghi âm có sẵn** (cần máy chủ có Whisper) và **văn bản dán tay**.
+- 📂 **Nhập bản ghi âm có sẵn** (m4a, mp3, wav, aac, ogg, amr...): file được chuyển thành văn bản rồi tự tóm tắt và vẽ sơ đồ tư duy, vẫn không cần AI. App điện thoại dùng bộ nhận dạng của máy (Android 13 trở lên, iPhone); trình duyệt Chrome/Edge bản mới "nghe" file trong im lặng; máy chủ có Whisper thì Whisper làm. File được lưu kèm để nghe lại.
+- 📝 Nhận cả **văn bản dán tay**.
 - 📈 **Học dần**: tự sửa thuật ngữ bạn hay phải sửa, tóm tắt đúng cỡ bạn hay giữ, tìm lại nội dung trong các bản ghi cũ.
 - 🤖 **AI local là tùy chọn**: có [faster-whisper](https://github.com/SYSTRAN/faster-whisper) thì máy chủ nhận dạng lại từ file ghi âm cho chính xác hơn; có [Ollama](https://ollama.com) thì LLM viết tóm tắt thay cho thuật toán.
 
@@ -17,6 +18,7 @@
 | Bước | Cách làm | Nằm ở đâu |
 | --- | --- | --- |
 | Giọng nói → văn bản | Bộ nhận dạng giọng nói **có sẵn của thiết bị**: `SpeechRecognizer` trên Android, `SFSpeechRecognizer` trên iOS (qua plugin riêng của app), Web Speech API trên trình duyệt máy tính (Chrome, Edge, Safari). Ứng dụng tự nghe lại sau mỗi câu để thành một lần ghi liên tục. | `app/static/speech.js`, `mobile/android/.../SpeechPlugin.java`, `mobile/ios/App/App/SpeechPlugin.swift` |
+| File ghi âm có sẵn → văn bản | Cũng là bộ nhận dạng của thiết bị, đọc âm thanh từ file thay vì micro. Android 13+: app giải mã file (MediaCodec) thành PCM 16 kHz rồi đưa cho `SpeechRecognizer` qua `EXTRA_AUDIO_SOURCE`, ưu tiên bộ nhận dạng chạy trên máy. iPhone: `SFSpeechRecognizer` nhận dạng từng đoạn dưới một phút, cắt ở chỗ lặng. Chrome/Edge 133+: trang phát file vào Web Audio (không ra loa) và đưa luồng đó cho Web Speech API, nên mất đúng bằng thời lượng file. | `app/static/speech.js` (`transcribeFile`), `mobile/android/.../FileRecognizer.java`, `FileSession.java`, `AudioDecoder.java`, `SpeechPlugin.swift` (`FileTranscriptionJob`) |
 | Văn bản → tóm tắt | Thuật toán thuần: gộp từ ghép tiếng Việt bằng từ điển, chấm điểm câu theo cụm từ khóa, vị trí, con số, từ gợi ý (thống nhất, chốt, giao cho, trước thứ sáu...), chọn các câu vừa quan trọng vừa không trùng ý. | `app/heuristic.py`, `app/textutil.py` (máy chủ) và `app/static/engine.js` (điện thoại, trình duyệt) |
 | Tóm tắt → sơ đồ tư duy | Cụm từ khóa nổi bật thành nhánh chủ đề, xếp theo thứ tự được nhắc tới; mỗi câu chỉ nằm ở một nhánh; quyết định và việc cần làm thành hai nhánh riêng. | cùng các file trên, vẽ bằng `app/static/mindmap.js` |
 
@@ -25,6 +27,8 @@ Hai bản Python và JavaScript của bộ máy dùng chung một file dữ li�
 > **Về riêng tư:** ứng dụng không gửi gì đi đâu. Riêng bộ nhận dạng giọng nói là dịch vụ của hệ điều hành/trình duyệt: Chrome và phần lớn máy Android gửi âm thanh tới Google, iPhone gửi tới Apple, trừ khi máy đã có gói nhận dạng ngoại tuyến cho ngôn ngữ đó (app Android tự thử gói ngoại tuyến khi mất mạng). Cần giữ âm thanh hoàn toàn trong nhà thì dùng máy chủ có Whisper ở phần "AI local" bên dưới.
 
 Giới hạn nên biết: bộ máy không cần AI **chọn và rút gọn câu có sẵn** chứ không viết lại bằng lời khác, nên chất lượng phụ thuộc vào văn bản nhận dạng được; nó hiểu tiếng Việt và tiếng Anh. Trên trình duyệt máy tính, ứng dụng vừa nhận dạng vừa ghi âm để nghe lại; trên điện thoại, micro chỉ cho một bên dùng nên app chỉ giữ văn bản (không có file ghi âm).
+
+Nhập file ghi âm có sẵn: trên Android cần bản 13 trở lên và bộ nhận dạng của máy phải nhận âm thanh từ file (bộ nhận dạng chạy trên máy của Google thường làm được; app tự thử lần lượt các dịch vụ của máy, không dịch vụ nào đọc được thì báo rõ). Trên trình duyệt chỉ Chrome/Edge bản 133 trở lên làm được, và file dài bao nhiêu thì mất chừng ấy thời gian; Firefox, Safari thì cần ứng dụng điện thoại hoặc máy chủ có Whisper. Chưa thử trên điện thoại thật: phần Android và iOS mới được biên dịch và kiểm bằng test giả lập.
 
 ## Ứng dụng học hỏi như thế nào?
 
@@ -109,13 +113,15 @@ app/
 └── static/
     ├── engine-data.js Dữ liệu của bộ máy (JSON), một nguồn cho cả Python lẫn JavaScript
     ├── engine.js      Bộ máy không cần AI bản JavaScript, kết quả giống hệt bản Python
-    ├── speech.js      Nhận dạng giọng nói của thiết bị: plugin của app hoặc Web Speech API
+    ├── speech.js      Nhận dạng giọng nói của thiết bị (lúc nói và từ file có sẵn): plugin của app hoặc Web Speech API
     ├── local.js       Chế độ độc lập: thay máy chủ bằng IndexedDB ngay trên máy
     ├── app.js         Giao diện: ghi, văn bản trực tiếp, xem trước, kết quả, học hỏi
     └── mindmap.js     Sơ đồ tư duy SVG tương tác
 mobile/
-├── android/app/src/main/java/.../SpeechPlugin.java, SpeechLoop.java   Plugin nhận dạng giọng nói Android
-└── ios/App/App/SpeechPlugin.swift                                     Plugin nhận dạng giọng nói iOS
+├── android/app/src/main/java/.../SpeechPlugin.java, SpeechLoop.java   Plugin nhận dạng giọng nói Android (lúc nói)
+│   FileRecognizer.java, FileSession.java, FilePump.java,
+│   AudioDecoder.java, PcmConverter.java                               Nhận dạng từ file có sẵn (Android 13+)
+└── ios/App/App/SpeechPlugin.swift                                     Plugin nhận dạng giọng nói iOS (lúc nói và từ file)
 ```
 
 API chính: `POST /api/meetings`, `POST /api/meetings/{id}/audio`, `POST /api/meetings/{id}/process`, `GET /api/meetings/{id}`, `PUT /api/meetings/{id}/transcript`, `PUT /api/meetings/{id}/analysis`, `POST /api/meetings/{id}/rating`, `GET /api/meetings/{id}/export.md`, `GET /api/learning/stats`, `POST /api/learning/ask`, `GET/POST/DELETE /api/glossary`, `GET /api/learning/export`, `GET /api/health`. Tài liệu tương tác tại `/docs`.
@@ -136,7 +142,7 @@ Bộ test chạy không cần Ollama/Whisper thật:
 
 - `tests/fakes.py` có Ollama giả chạy qua HTTP (`/api/tags`, `/api/chat`, `/api/embed`, `/api/embeddings`) và Whisper giả, bám sát hợp đồng thật để kiểm JSON hỏng, timeout, thiếu model, đổi model nhúng.
 - `tests/e2e/run.js` tự bật máy chủ trên thư mục dữ liệu tạm, dùng micro giả của Chromium, thay Web Speech API và plugin của app bằng bản giả điều khiển được (nói câu nào, lỗi lúc nào), in `PASS`/`FAIL` từng bước và thoát mã khác 0 khi có bước đỏ.
-- `mobile/android/app/src/test/.../SpeechLoopTest.java` kiểm vòng lặp nghe liên tục của Android trên JVM (`./gradlew testDebugUnitTest`), không cần máy ảo.
+- `mobile/android/app/src/test/...` kiểm trên JVM (`./gradlew testDebugUnitTest`, không cần máy ảo): vòng lặp nghe liên tục (`SpeechLoopTest`), điều phối nhận dạng từ file (`FileSessionTest`), bơm âm thanh qua đường ống (`FilePumpTest`), đổi tần số và trộn kênh (`PcmConverterTest`).
 - GitHub Actions: workflow **Tests (pytest + Playwright)** chạy hai bộ đầu ở mỗi lần push đụng tới `app/` hoặc `tests/`; workflow **Mobile build** chạy test Android rồi dựng APK/IPA. Xem kết quả ở tab Actions của repo.
 - Chưa có gì thay được việc thử trên máy thật: chất lượng nhận dạng giọng nói tùy từng điện thoại và chưa được kiểm tự động.
 - Báo cáo đợt kiểm thử gần nhất: [`TEST_REPORT.md`](TEST_REPORT.md).
