@@ -184,6 +184,9 @@ final class FileRecognizer implements FileSession.Engine {
     @Override
     public void startSession() {
         final int gen = ++generation;
+        // đầu ghi của đường ống chỉ thuộc về luồng bơm khi đã giao được cho nó; lỗi trước đó thì phải tự đóng, không thì
+        // mỗi lần mở dịch vụ thất bại (máy không có dịch vụ, dịch vụ chết) rò một file descriptor
+        ParcelFileDescriptor writeSide = null;
         try {
             if (stream == null) {
                 decoder = new AudioDecoder(file.getPath());   // đọc lại từ đầu cho dịch vụ mới
@@ -191,6 +194,7 @@ final class FileRecognizer implements FileSession.Engine {
             }
             ParcelFileDescriptor[] pipe = ParcelFileDescriptor.createPipe();
             readSide = pipe[0];
+            writeSide = pipe[1];
             Choice choice = choices.get(choiceIndex);
             if (choice.onDevice) {
                 recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context);
@@ -201,10 +205,18 @@ final class FileRecognizer implements FileSession.Engine {
             }
             recognizer.setRecognitionListener(new Listener(gen));
             recognizer.startListening(intentFor(readSide));
-            pump = new FilePump(stream, new PipeSink(pipe[1]), new PumpListener(gen),
+            pump = new FilePump(stream, new PipeSink(writeSide), new PumpListener(gen),
                 choice.onDevice ? ON_DEVICE_DELAY_MS : NETWORK_DELAY_MS);
             pumpThread.execute(pump);
+            writeSide = null;
         } catch (final IOException | RuntimeException e) {
+            if (writeSide != null) {
+                try {
+                    writeSide.close();
+                } catch (IOException ignored) {
+                    // đã đóng
+                }
+            }
             main.post(new Runnable() {
                 @Override
                 public void run() {

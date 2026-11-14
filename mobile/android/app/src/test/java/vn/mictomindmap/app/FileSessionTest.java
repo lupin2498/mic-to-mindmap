@@ -149,6 +149,23 @@ public class FileSessionTest {
     }
 
     @Test
+    public void progressIsReportedInSmallStepsNotOncePerPipeChunk() {
+        session.start(3_600_000_000L);   // file 1 giờ, bơm từng khối 4096 byte (128 ms âm thanh)
+        take();
+        long bytes = 0;
+        for (long position = 0; position <= 3_600_000_000L; position += 128_000) {
+            bytes += 4096;
+            session.onPumped(bytes, position);
+        }
+        List<String> lines = take();
+        assertTrue("báo tiến trình " + lines.size() + " lần cho 28.125 khối", lines.size() <= 202);
+        assertEquals("progress 0", lines.get(0));
+        assertEquals("progress 100", lines.get(lines.size() - 1));
+        session.onPumped(bytes + 4096, 0);   // dịch vụ mới đọc lại từ đầu: tiến trình lùi về cũng phải báo
+        assertEquals(list("progress 0"), take());
+    }
+
+    @Test
     public void nonSegmentedRecognizerIsReopenedUntilTheFileEnds() {
         session.start(-1);   // không biết thời lượng: không báo tiến trình
         take();

@@ -40,6 +40,9 @@ final class FileSession {
     static final int MAX_EMPTY_SESSIONS = 4;
     static final int MAX_FAILURES = 3;
     static final int MAX_STALLS = 2;
+    /** Báo tiến trình khi đổi từ 0,5% trở lên: khoảng 200 lần cho cả file, thay vì mỗi khối 128 ms âm thanh (hàng chục
+     *  lần mỗi giây qua cầu nối sang WebView, mỗi lần giao diện lại đếm lại toàn bộ số từ). */
+    static final double PROGRESS_STEP = 0.005;
 
     interface Engine {
         /** Mở phiên nhận dạng mới (dịch vụ hiện tại), đọc tiếp từ chỗ đang dở của file. */
@@ -88,6 +91,7 @@ final class FileSession {
     private int failures;
     private int stalls;
     private long durationUs = -1;
+    private double lastProgress = -1;
 
     FileSession(Engine engine, Scheduler scheduler, Events events) {
         this.engine = engine;
@@ -160,7 +164,12 @@ final class FileSession {
         everPumped = true;
         sessionBytes = bytes;
         if (durationUs > 0 && positionUs >= 0) {
-            events.progress(Math.min(1.0, (double) positionUs / durationUs));
+            double value = Math.min(1.0, (double) positionUs / durationUs);
+            // giảm cũng báo: dịch vụ mới đọc lại file từ đầu
+            if (lastProgress < 0 || Math.abs(value - lastProgress) >= PROGRESS_STEP || (value >= 1.0 && lastProgress < 1.0)) {
+                lastProgress = value;
+                events.progress(value);
+            }
         }
     }
 
