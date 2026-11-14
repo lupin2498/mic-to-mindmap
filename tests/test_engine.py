@@ -221,3 +221,23 @@ def test_meeting_markdown_export():
     # chưa xử lý: vẫn xuất được, không có mục rỗng
     bare = meeting_markdown({"title": "Chưa xử lý", "created_at": "", "participants": [], "analysis": None, "transcript": ""})
     assert bare == "# Chưa xử lý\n\n- Thời gian: \n"
+
+
+def test_run_on_speech_keeps_deadlines_whole_and_prefers_real_deadlines():
+    # câu dài không dấu câu bị cắt ở 28 từ: trước đây cắt đúng giữa "thứ năm | tuần sau" và "cuối | tuần này"
+    result = _run("vi_speech_run_on")
+    sentences = [s.lower() for s in split_sentences(SAMPLES["vi_speech_run_on"]["text"])]
+    assert any(s.endswith("trước thứ năm tuần sau") for s in sentences), sentences
+    assert any(s.endswith("hạn là cuối tuần này") for s in sentences), sentences
+    dues = {item["owner"]: item["due"] for item in result["action_items"]}
+    assert dues.get("Tuấn") == "trước thứ năm tuần sau", result["action_items"]   # không phải "hôm nay" của "hôm nay mình họp"
+    assert "cuối tuần này" in [item["due"] for item in result["action_items"]], result["action_items"]
+
+
+def test_due_prefers_a_marked_deadline_over_a_narrative_time():
+    assert find_due("hôm nay mình họp anh tuấn sẽ lo phần âm thanh trước thứ năm tuần sau") == "trước thứ năm tuần sau"
+    assert find_due("tuần này chị lan gửi báo cáo, hạn là ngày 20 tháng 11") == "ngày 20 tháng 11"
+    assert find_due("sáng nay Bình nhận việc, chậm nhất thứ sáu phải xong") == "thứ sáu"
+    # chỉ có một mốc thời gian: vẫn lấy như trước
+    assert find_due("Bình gửi báo cáo tuần sau") == "tuần sau"
+    assert find_due("hôm nay An gửi báo cáo") == "hôm nay"

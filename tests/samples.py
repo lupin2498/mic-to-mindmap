@@ -77,3 +77,12 @@ SAMPLES["vi_delegate"] = dict(title="", participants=["Dũng"], language="vi", t
     "Anh Hùng sẽ giao cho Minh Quang lập danh sách xe tải cần thuê. Giao cho Bình, Lan sẽ hỗ trợ phần số liệu. "
     "The vendor follow-up is assigned to Bob by Friday. Phí giao dịch chuyển khoản không đáng kể. "
     "Mọi người thống nhất chuyển kho trong tuần cuối của tháng 12."))
+
+# Nhận dạng giọng nói trả về một mạch không dấu câu: câu dài phải cắt ở chỗ không có dấu nào, nhưng không được cắt
+# ngang cụm thời hạn ("trước thứ năm | tuần sau", "hạn là cuối | tuần này"), và mốc kể chuyện ("hôm nay mình họp")
+# không phải hạn chót của việc cần làm
+SAMPLES["vi_speech_run_on"] = dict(title="", participants=["Tuấn", "Hà"], language="vi", text=(
+    "ờ thì hôm nay mình họp về việc chuẩn bị hội nghị khách hàng à anh tuấn sẽ lo phần âm thanh ánh sáng trước thứ năm "
+    "tuần sau còn chị hà thì gửi thư mời cho khách trước ngày 20 tháng 11 nhé chốt lại là ngân sách 200 triệu ok mọi người "
+    "ok vậy thống nhất là mình sẽ không làm tính năng chat nữa bình ơi em phụ trách viết tài liệu hướng dẫn nhé hạn là cuối "
+    "tuần này còn lại thì để tuần sau họp tiếp"))

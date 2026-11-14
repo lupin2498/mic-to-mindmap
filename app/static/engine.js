@@ -203,6 +203,34 @@
   const COMMA_END = new Set([',', ';']);
 
   /* Tách một "câu" quá dài (thường do transcript không có dấu câu) thành các mệnh đề ngắn hơn. */
+  /* Cắt ngay trước bare[end] mà rơi vào giữa một cụm thời hạn ("thứ năm | tuần sau", "hạn là cuối | tuần này"): số từ
+     cần giữ thêm cho trọn cụm (tối đa 5); không thì 0. bare: các từ đã viết thường, bỏ dấu câu. */
+  function dueOverhang(bare, end) {
+    const lo = Math.max(0, end - 5);
+    const hi = Math.min(bare.length, end + 5);
+    if (end <= lo || end >= hi) return 0;
+    const offsets = [];
+    let pos = 0;
+    for (const word of bare.slice(lo, hi)) {
+      offsets.push(pos);
+      pos += word.length + 1;
+    }
+    const text = bare.slice(lo, hi).join(' ');
+    const boundary = offsets[end - lo];
+    DUE_SPAN_RE.lastIndex = 0;
+    let match;
+    while ((match = DUE_SPAN_RE.exec(text)) !== null) {
+      const start = match.index, stop = start + match[0].length;
+      if (start === stop) { DUE_SPAN_RE.lastIndex = stop + 1; continue; }
+      if (start >= boundary) break;
+      if (stop <= boundary) continue;
+      if ((start > 0 && isWordChar(charBefore(text, start))) || (stop < text.length && isWordChar(charAt(text, stop)))) continue;
+      let last = 0;
+      for (let k = 0; k < offsets.length; k++) if (offsets[k] < stop) last = k;
+      return lo + last - end + 1;
+    }
+    return 0;
+  }
   function splitLong(sentence, maxTokens) {
     const words = wsWords(sentence);
     if (words.length <= maxTokens) return [sentence];
@@ -212,8 +240,9 @@
     const soft = Math.floor(maxTokens / 4) + 1;
     const parts = [];
     let current = [];
+    let hold = 0;   // số từ còn phải giữ để không cắt ngang cụm thời hạn (mất hạn chót của việc cần làm)
     for (let i = 0; i < total; i++) {
-      if (current.length && current.length >= soft) {
+      if (current.length && current.length >= soft && !hold) {
         const afterComma = COMMA_END.has(lastChar(words[i - 1]));
         const joined = COMPOUNDS.has(bare[i - 1] + ' ' + bare[i]);
         if (afterComma || (!joined && (matchAt(bare, i, MARKERS) > 0
@@ -223,7 +252,17 @@
         }
       }
       current.push(words[i]);
+      if (hold) {
+        hold -= 1;
+        if (!hold) {
+          parts.push(current.join(' '));
+          current = [];
+        }
+        continue;
+      }
       if (current.length >= maxTokens) {
+        hold = dueOverhang(bare, i + 1);
+        if (hold) continue;
         if (i + 1 < total && current.length > 1 && COMPOUNDS.has(bare[i] + ' ' + bare[i + 1])) {
           parts.push(current.slice(0, current.length - 1).join(' '));
           current = [words[i]];
@@ -539,6 +578,9 @@
   const DELEGATION_FILLERS = new Set(DATA.delegation_fillers);
   const TASK_LEADS = new Set(DATA.task_leads);
   const DUE_RE = new RegExp(DATA.due_patterns.map((p) => '(?:' + p + ')').join('|'), 'g');
+  const DUE_SPAN_RE = new RegExp(DUE_RE.source, 'g');   // riêng cho splitLong: không dùng chung lastIndex với findDue
+  // từ đứng ngay trước cụm thời gian cho biết đó là hạn chót ("hạn là cuối tuần", "chậm nhất thứ sáu")
+  const DEADLINE_WORDS = new Set(DATA.due_prepositions.concat(['hạn', 'chót', 'deadline', 'nhất']));
   const ORDINAL_DAYS = new Set(['thứ hai', 'thứ ba', 'thứ tư', 'thứ năm', 'thứ sáu', 'thứ bảy']);
   const TERMINAL = new Set(['.', ',', ';', ':', '…', ' ']);
   const CLOSERS = new Set(['"', "'", '”', '’', ')', ']', '»']);
@@ -612,10 +654,20 @@
   }
 
   // ---------------------------------------------------------------- hạn chót
+  /* Cụm thời gian có dấu hiệu hạn chót ("trước thứ năm", "vào ngày 20", "hạn là cuối tuần"), khác một mốc kể chuyện
+     ("hôm nay mình họp"). */
+  function markedDue(low, start, found) {
+    if (DUE_PREPOSITIONS.has(found.split(' ')[0])) return true;
+    const before = wsWords(low.slice(0, start)).map(stripPunct);
+    if (before.length && before[before.length - 1] === 'là') before.pop();
+    return before.length > 0 && DEADLINE_WORDS.has(before[before.length - 1]);
+  }
+  /* Hạn chót trong câu: cụm thời gian đầu tiên có dấu hiệu hạn chót, không có thì cụm thời gian đầu tiên. */
   function findDue(sentence) {
     const text = normalizeWs(sentence);
     const low = text.toLowerCase();
     const same = low.length === text.length;
+    let first = '';
     DUE_RE.lastIndex = 0;
     let match;
     while ((match = DUE_RE.exec(low)) !== null) {
@@ -625,9 +677,11 @@
       if (end < low.length && isWordChar(charAt(low, end))) continue;
       const found = match[0];
       if (ORDINAL_DAYS.has(found) && (start === 0 || low.slice(end, end + 3) === ' là')) continue;
-      return same ? text.slice(start, end) : found;
+      const result = same ? text.slice(start, end) : found;
+      if (markedDue(low, start, found)) return result;
+      if (!first) first = result;
     }
-    return '';
+    return first;
   }
 
   // --------------------------------------------------------- người phụ trách

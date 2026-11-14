@@ -23,6 +23,8 @@ ABBREVIATIONS = set(DATA["abbreviations"])
 HONORIFICS = set(DATA["honorifics"])
 PHRASE_EDGE_STOP = set(DATA["phrase_edge_stop"])
 COMPOUNDS = set(DATA["vi_lexicon"]) | set(DATA["vi_stop_phrases"])
+# cụm thời hạn ("trước thứ năm tuần sau", "cuối tuần này"): dùng chung với heuristic.find_due
+DUE_RE = re.compile("|".join("(?:" + pattern + ")" for pattern in DATA["due_patterns"]))
 
 # Khoảng trắng: đúng tập \s của Python cộng thêm BOM, viết tường minh để JavaScript dùng y hệt
 WS_CLASS = "[\\t\\n\\x0b\\x0c\\r\\x1c-\\x1f \\x85\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
@@ -239,6 +241,33 @@ def segment_phrases(phrases: list[str]) -> dict[str, list[list[str]]]:
 _MARKERS = build_index([m.split(" ") for m in DATA["discourse_markers"]])
 
 
+def due_overhang(bare: list[str], end: int) -> int:
+    """Cắt ngay trước bare[end] mà rơi vào giữa một cụm thời hạn ("thứ năm | tuần sau", "hạn là cuối | tuần này"): số từ
+    cần giữ thêm cho trọn cụm (tối đa 5); không thì 0. bare: các từ đã viết thường, bỏ dấu câu."""
+    lo = max(0, end - 5)
+    hi = min(len(bare), end + 5)
+    if end <= lo or end >= hi:
+        return 0
+    offsets = []
+    pos = 0
+    for word in bare[lo:hi]:
+        offsets.append(pos)
+        pos += len(word) + 1
+    text = " ".join(bare[lo:hi])
+    boundary = offsets[end - lo]
+    for match in DUE_RE.finditer(text):
+        start, stop = match.start(), match.end()
+        if start >= boundary:
+            break
+        if stop <= boundary:
+            continue
+        if (start > 0 and is_word_char(text[start - 1])) or (stop < len(text) and is_word_char(text[stop])):
+            continue
+        last = max(k for k in range(len(offsets)) if offsets[k] < stop)
+        return lo + last - end + 1
+    return 0
+
+
 def split_long(sentence: str, max_tokens: int = 28) -> list[str]:
     """Tách một 'câu' quá dài (thường do transcript không có dấu câu) thành các mệnh đề ngắn hơn."""
     words = ws_words(sentence)
@@ -250,8 +279,9 @@ def split_long(sentence: str, max_tokens: int = 28) -> list[str]:
     soft = max_tokens // 4 + 1
     parts: list[str] = []
     current: list[str] = []
+    hold = 0   # số từ còn phải giữ để không cắt ngang cụm thời hạn (mất hạn chót của việc cần làm)
     for i in range(total):
-        if current and len(current) >= soft:
+        if current and len(current) >= soft and not hold:
             # ưu tiên ngắt ở dấu phẩy/chấm phẩy, rồi tới cụm mở ý mới ("ngoài ra", "tiếp theo"), sau cùng là từ nối
             after_comma = words[i - 1][-1:] in (",", ";")
             joined = (bare[i - 1] + " " + bare[i]) in COMPOUNDS
@@ -260,7 +290,16 @@ def split_long(sentence: str, max_tokens: int = 28) -> list[str]:
                 parts.append(" ".join(current))
                 current = []
         current.append(words[i])
+        if hold:
+            hold -= 1
+            if not hold:
+                parts.append(" ".join(current))
+                current = []
+            continue
         if len(current) >= max_tokens:
+            hold = due_overhang(bare, i + 1)
+            if hold:
+                continue
             # buộc phải cắt: đừng cắt ngang một từ ghép ("trực | tiếp")
             if i + 1 < total and len(current) > 1 and (bare[i] + " " + bare[i + 1]) in COMPOUNDS:
                 parts.append(" ".join(current[:len(current) - 1]))

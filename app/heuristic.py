@@ -12,6 +12,7 @@ from .mindmap import normalize_mindmap
 from .textutil import (
     COMPOUNDS,
     CONJUNCTIONS,
+    DUE_RE,
     GENERIC,
     HONORIFICS,
     STOPWORDS,
@@ -82,7 +83,9 @@ DUE_PREPOSITIONS = set(DATA["due_prepositions"])
 DELEGATION_FILLERS = set(DATA["delegation_fillers"])
 TASK_LEADS = set(DATA["task_leads"])
 
-_DUE_RE = re.compile("|".join("(?:" + pattern + ")" for pattern in DATA["due_patterns"]))
+_DUE_RE = DUE_RE
+# từ đứng ngay trước cụm thời gian cho biết đó là hạn chót ("hạn là cuối tuần", "chậm nhất thứ sáu")
+_DEADLINE_WORDS = DUE_PREPOSITIONS | {"hạn", "chót", "deadline", "nhất"}
 # "thứ hai", "thứ ba"... đứng đầu câu hoặc trước "là" nghĩa là "điều thứ hai", không phải ngày trong tuần
 _ORDINAL_DAYS = {"thứ hai", "thứ ba", "thứ tư", "thứ năm", "thứ sáu", "thứ bảy"}
 _TERMINAL = ".,;:… "
@@ -166,10 +169,23 @@ def clean_sentence(sentence: str) -> str:
 
 
 # ------------------------------------------------------------------ hạn chót
+def _marked_due(low: str, start: int, found: str) -> bool:
+    """Cụm thời gian có dấu hiệu hạn chót ("trước thứ năm", "vào ngày 20", "hạn là cuối tuần"), khác một mốc kể chuyện
+    ("hôm nay mình họp")."""
+    if found.split(" ")[0] in DUE_PREPOSITIONS:
+        return True
+    before = [strip_punct(w) for w in ws_words(low[:start])]
+    if before and before[-1] == "là":
+        before.pop()
+    return bool(before) and before[-1] in _DEADLINE_WORDS
+
+
 def find_due(sentence: str) -> str:
+    """Hạn chót trong câu: cụm thời gian đầu tiên có dấu hiệu hạn chót, không có thì cụm thời gian đầu tiên."""
     text = normalize_ws(sentence)
     low = text.lower()
     same = len(low) == len(text)
+    first = ""
     for match in _DUE_RE.finditer(low):
         start, end = match.start(), match.end()
         if start == end:
@@ -181,8 +197,12 @@ def find_due(sentence: str) -> str:
         found = low[start:end]
         if found in _ORDINAL_DAYS and (start == 0 or low[end:end + 3] == " là"):
             continue
-        return text[start:end] if same else found
-    return ""
+        result = text[start:end] if same else found
+        if _marked_due(low, start, found):
+            return result
+        if not first:
+            first = result
+    return first
 
 
 # ----------------------------------------------------------- người phụ trách
