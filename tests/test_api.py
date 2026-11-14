@@ -201,3 +201,63 @@ def test_user_edits_are_not_truncated_by_llm_output_limits(client):
     body = client.put(f"/api/meetings/{mid}/analysis", json={"mindmap": "không phải cây", "action_items": [{"x": 1}, {"task": "  "}]})
     assert body.status_code == 200 and body.json()["analysis"]["action_items"] == []
     assert body.json()["analysis"]["mindmap"]["title"] == "không phải cây"
+
+
+def test_device_speech_transcript_flow(client):
+    """Điện thoại nhận dạng giọng nói ngay lúc nói: không có file âm thanh, chỉ gửi văn bản kèm thời lượng."""
+    meeting = client.post("/api/meetings", json={"title": "", "language": "vi", "duration_sec": 754.5}).json()
+    assert meeting["duration_sec"] == 754.5 and meeting["title"] == "Cuộc họp"
+    mid = meeting["id"]
+    resp = client.put(f"/api/meetings/{mid}/transcript", json={"transcript": VI_TRANSCRIPT, "source": "device", "reanalyze": True})
+    assert resp.status_code == 200 and resp.json()["learned_corrections"] == []
+    meeting = client.get(f"/api/meetings/{mid}").json()
+    assert meeting["status"] == "done" and meeting["transcript_source"] == "device"
+    assert not meeting["has_audio"] and meeting["duration_sec"] == 754.5
+    analysis = meeting["analysis"]
+    assert analysis["engine"] == "heuristic" and analysis["decisions"] and analysis["action_items"]
+    assert [c["title"] for c in analysis["mindmap"]["children"]][-2:] == ["Quyết định", "Việc cần làm"]
+    assert client.app.state.db.list_feedback("transcript_edit") == []     # lần ghi đầu không phải là "sửa"
+    # người dùng sửa lại văn bản: nhãn nguồn ghi nhận, lần sửa được đưa vào để học
+    edited = VI_TRANSCRIPT.replace("500 triệu", "600 triệu")
+    client.put(f"/api/meetings/{mid}/transcript", json={"transcript": edited, "source": "manual"})
+    assert client.get(f"/api/meetings/{mid}").json()["transcript_source"] == "device+edited"
+    assert len(client.app.state.db.list_feedback("transcript_edit")) == 1
+
+    # nguồn lạ hoặc bỏ trống thì coi là nhập tay; nhãn quá dài bị từ chối
+    for source, expected in ((None, "manual"), ("", "manual"), ("whisper:large", "manual"), ("browser", "browser")):
+        other = client.post("/api/meetings", json={"title": "Nguồn"}).json()
+        body = {"transcript": VI_TRANSCRIPT} if source is None else {"transcript": VI_TRANSCRIPT, "source": source}
+        assert client.put(f"/api/meetings/{other['id']}/transcript", json=body).json()["transcript_source"] == expected
+    other = client.post("/api/meetings", json={"title": "Nguồn"}).json()
+    assert client.put(f"/api/meetings/{other['id']}/transcript", json={"transcript": "x", "source": "d" * 21}).status_code == 422
+    # thời lượng vô lý thì bỏ qua chứ không lưu
+    for bad in (0, -5, 1e12):
+        assert client.post("/api/meetings", json={"title": "Thời lượng", "duration_sec": bad}).json()["duration_sec"] is None
+    assert client.post("/api/meetings", json={"title": "Thời lượng", "duration_sec": "abc"}).status_code == 422
+
+
+def test_summary_size_follows_what_the_user_keeps(client):
+    """Không cần AI vẫn "học" được: người dùng hay rút tóm tắt còn 3 ý thì lần sau bộ máy tự tóm tắt 3 ý."""
+    from samples import SAMPLES
+
+    long_text = SAMPLES["vi_long_speech"]["text"]
+
+    def analyze(title):
+        meeting = client.post("/api/meetings", json={"title": title}).json()
+        client.put(f"/api/meetings/{meeting['id']}/transcript", json={"transcript": long_text, "source": "device", "reanalyze": True})
+        return client.get(f"/api/meetings/{meeting['id']}").json()
+
+    first = analyze("Họp dự án 1")
+    assert first["status"] == "done" and len(first["analysis"]["summary"]) == 7
+    assert len(first["analysis"]["mindmap"]["children"]) == 8
+    kept = first["analysis"]["summary"][:3]
+    tree = dict(first["analysis"]["mindmap"], children=first["analysis"]["mindmap"]["children"][:4])
+    client.put(f"/api/meetings/{first['id']}/analysis", json={"summary": kept, "mindmap": tree})
+    # một lần sửa chưa nói lên thói quen
+    assert len(analyze("Họp dự án 2")["analysis"]["summary"]) == 7
+    client.put(f"/api/meetings/{first['id']}/analysis", json={"summary": kept[:2] + ["Ý viết lại"], "mindmap": tree})
+    third = analyze("Họp dự án 3")
+    assert len(third["analysis"]["summary"]) == 3
+    assert len(third["analysis"]["mindmap"]["children"]) < 8
+    stats = client.get("/api/learning/stats").json()["feedback"]
+    assert stats["edits"] == 2 and stats["avg_summary_items"] == 3

@@ -193,7 +193,7 @@
       "điểm", "bước", "cách", "hướng", "chính", "khác", "đúng", "sai", "rõ", "kỹ", "sớm", "muộn", "gấp", "xin",
       "mời", "giúp", "thử", "tính", "định", "chọn", "tìm", "sửa", "đổi", "chuyển", "nhận", "trả", "mở", "đóng",
       "chạy", "đứng", "ngồi", "ăn", "uống", "sáng", "trưa", "chiều", "tối", "đêm", "trẻ", "già", "cũ", "nhẹ", "nặng",
-      "mạnh", "yếu", "dễ", "khó", "đẹp", "rẻ", "đắt", "đạt", "gồm", "chiếm", "thing", "things", "stuff", "people",
+      "mạnh", "yếu", "dễ", "khó", "đẹp", "rẻ", "đắt", "đạt", "gồm", "chiếm", "giao", "thing", "things", "stuff", "people",
       "guys", "meeting", "lot", "bit", "way", "kind", "sort", "part", "point", "make", "take", "give", "go", "come",
       "look", "use", "work", "talk", "discuss", "discussed", "put", "start", "end", "new", "good", "great", "bad",
       "big", "small", "sure", "okay", "prepare", "send", "contact", "follow", "update", "check", "share", "finish",
@@ -212,7 +212,7 @@
       "today's topic is", "meeting about", "going to discuss"
     ],
     "title_skip": [
-      "the", "a", "an", "our", "một", "các", "những", "cái", "vấn đề", "tình hình"
+      "the", "a", "an", "our", "một", "các", "những", "cái", "vấn đề", "tình hình", "việc"
     ],
     "conjunctions": [
       "và", "nhưng", "thì", "nên", "rồi", "vì", "nếu", "and", "but", "so", "then", "also", "because", "however"
@@ -252,7 +252,7 @@
       "giao cho", "giao việc", "được giao", "phân công", "phụ trách", "đảm nhận", "chịu trách nhiệm",
       "có trách nhiệm", "hoàn thành", "deadline", "hạn chót", "hạn cuối", "đừng quên", "cần phải", "phải", "todo",
       "to do", "action item", "follow up", "must", "have to", "has to", "needs to", "need to", "responsible for",
-      "take care of", "assigned", "make sure"
+      "take care of", "assigned", "assign to", "delegated to", "delegate to", "make sure"
     ],
     "action_weak": [
       "cần", "sẽ", "nên", "gửi", "chuẩn bị", "liên hệ", "liên lạc", "triển khai", "theo dõi", "báo cáo", "kiểm tra",
@@ -319,7 +319,7 @@
       "các bạn", "cả nhóm", "i", "we", "you", "they", "everyone"
     ],
     "due_prepositions": [
-      "vào", "trước", "đến", "tới", "trong", "hết", "lúc", "by", "on", "before", "until", "at"
+      "vào", "trước", "đến", "tới", "trong", "hết", "lúc", "từ", "sau", "by", "on", "before", "until", "at", "from", "after"
     ],
     "not_names": [
       "và", "nhưng", "thì", "nên", "rồi", "sau", "tiếp", "ngoài", "còn", "tuy", "vì", "nếu", "and", "but", "so",
@@ -371,6 +371,17 @@
     ],
     "gap_words": [
       "thì", "cũng"
+    ],
+    "delegation_cues": [
+      "giao việc cho", "giao cho", "phân công cho", "phân công", "assigned to", "assign to", "delegated to",
+      "delegate to"
+    ],
+    "delegation_fillers": [
+      "thì", "cũng", "sẽ", "được", "nên", "cần", "phải", "is", "are", "was", "were", "be", "been", "will", "should",
+      "to", "got", "gets"
+    ],
+    "task_leads": [
+      "việc"
     ],
     "decision_subjects": [
       "chúng ta", "chúng tôi", "chúng mình", "mọi người", "cả nhóm", "cả team", "cả phòng", "nhóm", "team",

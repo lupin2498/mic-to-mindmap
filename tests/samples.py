@@ -68,3 +68,12 @@ SAMPLES["vi_long_speech"] = dict(title="", participants=["Tuấn", "Hà", "Phư�
     "để kịp lịch ra mắt thì phần đặt lịch phải xong trước ngày 30 tháng 11. "
     "cuối cùng là phần truyền thông. hà đề xuất làm video ngắn giới thiệu ứng dụng đăng lên mạng xã hội. mọi người đồng ý làm video ngắn nhưng ngân sách không quá 20 triệu. "
     "tóm lại tuần này ưu tiên số một là lấy được tài liệu kỹ thuật từ bệnh viện. ok cảm ơn mọi người."))
+
+# Giao việc đích danh: người nhận việc đứng sau "giao cho", "phân công" chứ không đứng đầu câu
+SAMPLES["vi_delegate"] = dict(title="", participants=["Dũng"], language="vi", text=(
+    "Hôm nay chúng ta họp về việc chuyển kho hàng sang địa điểm mới. Kho hiện tại hết hợp đồng thuê vào cuối tháng 12. "
+    "Việc liên hệ nhà cung cấp kệ hàng giao cho Bình trước thứ tư. Giao cho anh Hùng tìm mặt bằng kho mới ở Thủ Đức. "
+    "phần báo cáo chi phí vận chuyển thì sẽ được giao cho chị lan. Phân công Dũng kiểm kê hàng tồn trước ngày 20 tháng 12. "
+    "Anh Hùng sẽ giao cho Minh Quang lập danh sách xe tải cần thuê. Giao cho Bình, Lan sẽ hỗ trợ phần số liệu. "
+    "The vendor follow-up is assigned to Bob by Friday. Phí giao dịch chuyển khoản không đáng kể. "
+    "Mọi người thống nhất chuyển kho trong tuần cuối của tháng 12."))

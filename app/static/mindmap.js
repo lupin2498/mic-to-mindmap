@@ -224,7 +224,9 @@
       }, g);
       node.lines.forEach((line, i) => {
         const span = el('tspan', { x: PAD_X + (isRoot ? 4 : 0), dy: i === 0 ? 0 : node.lineH }, text);
-        span.textContent = line;
+        // Giữ dấu cách ở chỗ xuống dòng: không có nó thì chữ đọc ra (trình đọc màn hình, sao chép, tìm trong file SVG
+        // xuất ra) bị dính liền, kiểu "sản phẩmmới". Dòng nào cũng đặt lại x nên dấu cách cuối dòng không hiện ra.
+        span.textContent = i < node.lines.length - 1 ? `${line} ` : line;
       });
       if (node.children.length) {
         const cx = node.side === -1 ? -8 : node.w + 8;

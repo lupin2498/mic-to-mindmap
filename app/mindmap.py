@@ -100,7 +100,8 @@ def meeting_markdown(meeting: dict) -> str:
     lines = [f"# {meeting['title']}", "", f"- Thời gian: {meeting['created_at']}"]
     if meeting.get("participants"):
         lines.append(f"- Người tham gia: {', '.join(meeting['participants'])}")
-    lines += ["", "## Ý chính"] + [f"- {s}" for s in analysis.get("summary") or []]
+    if analysis.get("summary"):   # chưa xử lý thì không in đề mục rỗng
+        lines += ["", "## Ý chính"] + [f"- {s}" for s in analysis["summary"]]
     if analysis.get("decisions"):
         lines += ["", "## Quyết định"] + [f"- {d}" for d in analysis["decisions"]]
     if analysis.get("action_items"):

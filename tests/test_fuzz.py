@@ -56,8 +56,11 @@ def test_fuzz_core_text_functions():
         for language in ("vi", "en", "auto"):
             result = analyze_heuristic(text, _text(rng, 3), [_text(rng, 2) for _ in range(rng.randint(0, 3))], language)
             json.dumps(result)  # phải tuần tự hóa được
-            assert len(result["summary"]) <= 8 and len(result["action_items"]) <= 8 and len(result["keywords"]) <= 10
+            assert len(result["summary"]) <= 12 and len(result["action_items"]) <= 12 and len(result["keywords"]) <= 10
+            assert len(result["decisions"]) <= 6
             assert all(len(s) <= 181 for s in result["summary"])
+            assert all(0 < len(i["task"]) <= 161 and isinstance(i["owner"], str) and isinstance(i["due"], str)
+                       for i in result["action_items"])
             _check_tree(result["mindmap"])
             assert to_markdown(result["mindmap"]).startswith("# ")
             runs += 1

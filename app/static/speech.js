@@ -347,7 +347,8 @@
     wantAwake = !!on;
     const plugin = nativePlugin();
     if (plugin && typeof plugin.keepAwake === 'function') {
-      Promise.resolve().then(() => plugin.keepAwake({ on: wantAwake })).catch(() => {});
+      const on = wantAwake;   // chốt giá trị ngay: gọi bật rồi tắt liền nhau thì phải gửi đủ cả hai
+      Promise.resolve().then(() => plugin.keepAwake({ on })).catch(() => {});
       return;
     }
     if (wantAwake) {

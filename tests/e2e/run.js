@@ -338,10 +338,15 @@ step('mindmap: chọn, sửa chữ, thêm, xóa, thu gọn, zoom, xuất SVG và
   await page.locator('#mindmap .mm-node:has-text("Nhánh đã sửa")').click();
   await page.click('#mm-add-child');
   await page.waitForSelector('.mm-editor');
-  await page.fill('.mm-editor', 'Ý con mới');
+  // chữ dài phải xuống dòng với mọi phông (máy CI dùng phông rộng hơn máy phát triển) mà đọc ra vẫn nguyên văn
+  const longTitle = 'Ý con mới dài tới mức chắc chắn phải xuống dòng với mọi phông chữ trên mọi máy';
+  await page.fill('.mm-editor', longTitle);
   await page.press('.mm-editor', 'Enter');
   eq(await count(), before + 1, 'thêm một nút');
-  await page.locator('#mindmap .mm-node:has-text("Ý con mới")').click();
+  const longNode = page.locator('#mindmap .mm-node:has-text("Ý con mới")');
+  assert(await longNode.locator('tspan').count() >= 2, 'nút dài được xuống dòng');
+  eq(await longNode.locator('> text').textContent(), longTitle, 'chữ của nút nhiều dòng đọc ra không dính liền');
+  await longNode.click();
   await page.click('#mm-delete');
   eq(await count(), before, 'xóa nút vừa thêm');
   await page.click('#mm-delete');
@@ -1193,6 +1198,117 @@ step('di-dong-www: máy chủ AI là tùy chọn, nhập địa chỉ thì chạ
   await until(() => page.evaluate(() => document.querySelector('#badge-memory').textContent === 'Lưu trên máy này'), 'về chế độ độc lập');
   assert((await page.textContent('#meeting-list')).includes('Ghi chú trên máy'), 'dữ liệu trên máy còn nguyên');
 }, { allow: /ERR_CONNECTION_REFUSED|Failed to load resource/ });
+
+// ============================================ lớp nhận dạng giọng nói (speech.js)
+step('speech-web: Web Speech API tự chạy lại, không lặp vô hạn khi dịch vụ hỏng, dừng được cả khi dịch vụ im lặng', async (ctx) => {
+  // Chrome trên Android lặp kết quả nếu bật continuous: ở đó phải nhận từng câu rồi tự chạy lại
+  const android = await open(WWW + '/', PHONE, { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Mobile Safari/537.36' });
+  const mobile = await android.evaluate(async () => {
+    const got = [];
+    const session = window.M2MSpeech.create({ lang: 'vi-VN', onFinal: (t) => got.push(t) });
+    await session.start();
+    const first = window.__sr.continuous;
+    window.__say('câu một');
+    window.__srEnd();                       // hết một câu là dịch vụ tự tắt
+    await new Promise((r) => setTimeout(r, 400));
+    window.__say('câu hai');
+    await session.stop();
+    return { support: window.M2MSpeech.support(), first, starts: window.__sr.starts, got };
+  });
+  eq(mobile, { support: { provider: 'web', recordAudio: false, label: 'trình duyệt' }, first: false, starts: 2, got: ['câu một', 'câu hai'] }, 'Chrome Android');
+  await android.context().close();
+
+  const page = ctx.page = await open(WWW + '/', DESKTOP);
+  const result = await page.evaluate(async () => {
+    const S = window.M2MSpeech;
+    const out = { lang: [S.langTag('vi'), S.langTag('en'), S.langTag('en-GB'), S.langTag('auto')],
+      format: [S.formatUtterance('  xin   chào '), S.formatUtterance('đã xong chưa?'), S.formatUtterance(''), S.formatUtterance('ổn rồi…')] };
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // 1) dịch vụ tắt ngay sau khi bật, lần nào cũng vậy: phải dừng hẳn và báo MỘT lỗi, không quay vòng mãi
+    const errors = [];
+    const states = [];
+    class DeadSR { start() { window.__dead = (window.__dead || 0) + 1; setTimeout(() => this.onend && this.onend(), 5); } stop() {} }
+    const Real = window.SpeechRecognition;
+    window.SpeechRecognition = window.webkitSpeechRecognition = DeadSR;
+    let session = S.create({ onError: (e) => errors.push(`${e.code}:${e.fatal}`), onState: (st) => states.push(st.listening) });
+    await session.start();
+    await wait(6500);
+    out.dead = { starts: window.__dead, errors, lastState: states[states.length - 1], active: session.isActive() };
+    // 2) trình duyệt ném lỗi ngay khi bật
+    class ThrowSR { start() { throw new Error('InvalidStateError'); } }
+    window.SpeechRecognition = window.webkitSpeechRecognition = ThrowSR;
+    try { await S.create({}).start(); out.throws = 'không báo lỗi'; } catch (err) { out.throws = err.code; }
+    // 3) bấm dừng mà dịch vụ không bao giờ báo "đã tắt": vẫn dừng xong, giữ phần đang nói dở
+    const finals = [];
+    class MuteSR { start() { window.__mute = this; } stop() {} }
+    window.SpeechRecognition = window.webkitSpeechRecognition = MuteSR;
+    session = S.create({ onFinal: (t) => finals.push(t) });
+    await session.start();
+    window.__mute.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'nói dở' }], { isFinal: false })] });
+    const t0 = Date.now();
+    await session.stop();
+    out.mute = { finals, waited: Date.now() - t0 < 4000, active: session.isActive() };
+    // 4) kết quả của bộ nhận dạng cũ về sau khi đã dừng thì bỏ
+    window.__mute.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: 'về muộn' }], { isFinal: true })] });
+    out.late = finals.slice();
+    window.SpeechRecognition = window.webkitSpeechRecognition = Real;
+    return out;
+  });
+  eq(result.lang, ['vi-VN', 'en-US', 'en-GB', 'vi-VN'], 'mã ngôn ngữ');
+  eq(result.format, ['Xin chào.', 'Đã xong chưa?', '', 'Ổn rồi…'], 'định dạng câu');
+  assert(result.dead.starts >= 5 && result.dead.starts <= 6, `số lần thử khi dịch vụ chết (${result.dead.starts})`);
+  eq([result.dead.errors, result.dead.lastState, result.dead.active], [['unknown:true'], false, false], 'dịch vụ chết: một lỗi rồi dừng hẳn');
+  eq(result.throws, 'unknown', 'trình duyệt ném lỗi khi bật');
+  eq(result.mute, { finals: ['nói dở'], waited: true, active: false }, 'dừng khi dịch vụ im lặng');
+  eq(result.late, ['nói dở'], 'kết quả về muộn bị bỏ');
+});
+
+step('speech-native: plugin của app được ưu tiên, không dùng được thì chuyển sang trình duyệt, dừng xong gỡ hết bộ nghe', async (ctx) => {
+  const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
+  const result = await page.evaluate(async () => {
+    const S = window.M2MSpeech;
+    const out = { support: S.support() };
+    const events = [];
+    const session = S.create({ lang: 'en-US', onPartial: (t) => events.push(`p:${t}`), onFinal: (t) => events.push(`f:${t}`),
+      onState: (st) => events.push(`s:${st.listening}:${st.reason}`), onLevel: (v) => events.push(`l:${v}`),
+      onError: (e) => events.push(`e:${e.code}:${e.fatal}`) });
+    await session.start();
+    await new Promise((r) => setTimeout(r, 20));
+    window.__nativeEmit('level', { value: 3 });           // giá trị ngoài khoảng được kẹp về 0..1
+    window.__nativeEmit('partial', { text: ' hello ' });
+    window.__nativeEmit('final', { text: 'hello world' });
+    window.__nativeEmit('error', { code: 'kỳ-lạ', fatal: false });
+    window.__native.pending = 'last words';
+    await session.stop();
+    out.events = events;
+    out.listeners = Object.values(window.__native.listeners).reduce((n, l) => n + l.length, 0);
+    out.calls = window.__native.calls.map((c) => c[0]);
+    window.__nativeEmit('final', { text: 'sau khi dừng' });
+    out.after = events.length;
+    // máy không có dịch vụ nhận dạng nhưng trình duyệt nhúng có Web Speech API: dùng cái đó
+    class WebSR { start() { window.__webStarted = true; } stop() { setTimeout(() => this.onend && this.onend(), 0); } }
+    window.SpeechRecognition = WebSR;
+    window.__native.startError = { code: 'unavailable', message: 'no service' };
+    const fallback = S.create({});
+    await fallback.start();
+    out.fallback = [fallback.provider, !!window.__webStarted];
+    await fallback.stop();
+    // lỗi khác (thiếu quyền) thì báo ra, không lặng lẽ đổi nguồn
+    window.__native.startError = { code: 'permission', message: 'denied' };
+    try { await S.create({}).start(); out.denied = 'không báo lỗi'; } catch (err) { out.denied = [err.code, /quyền/.test(err.message)]; }
+    // giữ màn hình sáng đi qua plugin
+    S.keepAwake(true); S.keepAwake(false);
+    await new Promise((r) => setTimeout(r, 20));
+    out.awake = window.__native.calls.filter((c) => c[0] === 'keepAwake').map((c) => c[1].on);
+    return out;
+  });
+  eq(result.support, { provider: 'native', recordAudio: false, label: 'thiết bị' }, 'nguồn nhận dạng');
+  eq(result.events, ['s:true:', 'l:1', 'p:hello', 'f:hello world', 'p:', 'e:kỳ-lạ:false', 'f:last words', 'p:', 's:false:'], 'sự kiện từ plugin');
+  eq([result.listeners, result.after, result.calls], [0, result.events.length, ['start', 'stop']], 'sau khi dừng: gỡ bộ nghe, bỏ sự kiện về muộn');
+  eq(result.fallback, ['web', true], 'chuyển sang Web Speech API khi plugin báo không có dịch vụ');
+  eq(result.denied, ['permission', true], 'thiếu quyền thì báo lỗi');
+  eq(result.awake, [true, false], 'giữ màn hình sáng');
+});
 
 // ================================================================ chạy
 async function waitHttp(url, child) {

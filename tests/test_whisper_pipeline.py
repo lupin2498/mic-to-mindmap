@@ -155,3 +155,30 @@ def test_first_manual_transcript_is_not_recorded_as_an_edit(client):
     assert m["transcript_source"] == "manual"
     assert client.get("/api/learning/stats").json()["feedback"].get("ratings") == 0
     assert client.app.state.db.list_feedback("transcript_edit") == []
+
+
+def test_device_speech_text_is_a_draft_that_whisper_replaces(client):
+    """Văn bản nhận dạng trực tiếp trên điện thoại ("device") cũng chỉ là bản nháp: máy chủ có Whisper và có file âm thanh
+    thì nhận dạng lại; không có file thì giữ nguyên văn bản của điện thoại."""
+    fake = FakeTranscriber(text=VI_TRANSCRIPT)
+    client.app.state.pipeline.transcriber = fake
+    meeting = client.post("/api/meetings", json={"title": "Từ điện thoại"}).json()
+    mid = meeting["id"]
+    client.put(f"/api/meetings/{mid}/transcript", json={"transcript": "văn bản nháp từ điện thoại", "source": "device"})
+    client.post(f"/api/meetings/{mid}/process")
+    m = client.get(f"/api/meetings/{mid}").json()
+    assert m["status"] == "done" and m["transcript_source"] == "device" and fake.calls == []
+    assert m["transcript"] == "văn bản nháp từ điện thoại"
+    client.post(f"/api/meetings/{mid}/audio", files={"audio": ("rec.m4a", io.BytesIO(b"fake-m4a"), "audio/mp4")})
+    client.post(f"/api/meetings/{mid}/process")
+    m = client.get(f"/api/meetings/{mid}").json()
+    assert len(fake.calls) == 1 and m["transcript"] == VI_TRANSCRIPT and m["transcript_source"] == "whisper:small"
+    # người dùng đã sửa tay văn bản của điện thoại thì Whisper không được ghi đè
+    other = client.post("/api/meetings", json={"title": "Đã sửa tay"}).json()
+    client.put(f"/api/meetings/{other['id']}/transcript", json={"transcript": "bản nháp", "source": "device"})
+    client.put(f"/api/meetings/{other['id']}/transcript", json={"transcript": VI_TRANSCRIPT + " Câu thêm tay."})
+    client.post(f"/api/meetings/{other['id']}/audio", files={"audio": ("rec.m4a", io.BytesIO(b"fake-m4a"), "audio/mp4")})
+    client.post(f"/api/meetings/{other['id']}/process")
+    m = client.get(f"/api/meetings/{other['id']}").json()
+    assert len(fake.calls) == 1 and m["transcript_source"] == "device+edited" and m["transcript"].endswith("Câu thêm tay.")
+

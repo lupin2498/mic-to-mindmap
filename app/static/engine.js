@@ -517,6 +517,7 @@
   const MODALS = plainIndex('modals');
   const ORG_UNITS = plainIndex('org_units');
   const SUBJECTS = plainIndex('subject_pronouns');
+  const DELEGATION = plainIndex('delegation_cues');
   const LEAD = plainIndex('lead_fillers');
   const TRAIL = plainIndex('trail_particles');
   const DECISION_SUBJECTS = plainIndex('decision_subjects');
@@ -535,6 +536,8 @@
   const NOT_NAMES_AFTER_HONORIFIC = new Set(DATA.not_names_after_honorific);
   const STUTTER = new Set(DATA.stutter_words);
   const DUE_PREPOSITIONS = new Set(DATA.due_prepositions);
+  const DELEGATION_FILLERS = new Set(DATA.delegation_fillers);
+  const TASK_LEADS = new Set(DATA.task_leads);
   const DUE_RE = new RegExp(DATA.due_patterns.map((p) => '(?:' + p + ')').join('|'), 'g');
   const ORDINAL_DAYS = new Set(['thứ hai', 'thứ ba', 'thứ tư', 'thứ năm', 'thứ sáu', 'thứ bảy']);
   const TERMINAL = new Set(['.', ',', ';', ':', '…', ' ']);
@@ -631,6 +634,78 @@
   function isNameToken(token) {
     return cpLen(token) >= 2 && UPPER_START_RE.test(token) && ALPHA_ONLY_RE.test(token.replace(/[.\-]/g, ''));
   }
+  /* Người được giao việc đích danh: tên đứng ngay sau "giao cho", "phân công"... ("việc này giao cho Bình").
+     Trả về [tên, loại]; không có thì ['', '']. */
+  function delegatedTo(words, bare, low, participants) {
+    const n = words.length;
+    for (let i = 0; i < n; i++) {
+      const cue = matchAt(low, i, DELEGATION);
+      if (cue === 0) continue;
+      const j = i + cue;
+      if (j >= n) break;
+      const honor = HONORIFICS.has(low[j]) && j + 1 < n ? 1 : 0;
+      // a) tên có trong danh sách người tham gia (có thể kèm xưng hô: "giao cho anh An")
+      let best = '', bestSize = 0;
+      for (const name of participants) {
+        const label = normalizeWs(name);
+        const parts = bareParts(label);
+        const size = parts.length;
+        if (size === 0 || size <= bestSize) continue;
+        for (let off = 0; off <= honor; off++) {
+          const at = j + off;
+          if (at + size > n) continue;
+          let ok = true;
+          for (let k = 0; k < size; k++) if (low[at + k] !== parts[k]) { ok = false; break; }
+          if (!ok) continue;
+          // "giao cho chi nhánh": "chi" ở đây không phải tên người
+          if (at + size < n && COMPOUNDS.has(low[at + size - 1] + ' ' + low[at + size])) continue;
+          best = label; bestSize = size;
+          break;
+        }
+      }
+      if (best) return [best, 'participant'];
+      // b) tên riêng viết hoa, có thể kèm xưng hô: "giao cho Bình", "phân công chị Lan"
+      const nameTokens = [];
+      let k = j + honor;
+      while (k < n && nameTokens.length < 3) {
+        if (!isNameToken(bare[k]) || NOT_NAMES.has(low[k])) break;
+        nameTokens.push(bare[k]);
+        if (CLAUSE_END.has(lastChar(words[k]))) break;
+        k += 1;
+      }
+      if (nameTokens.length) return [(honor ? bare[j] + ' ' : '') + nameTokens.join(' '), 'name'];
+      // c) xưng hô + tên viết thường (văn bản nhận dạng giọng nói): "giao cho anh hùng tìm mặt bằng"
+      if (honor) {
+        const word = low[j + 1];
+        if (cpLen(word) >= 2 && ALPHA_ONLY_RE.test(word) && !NOT_NAMES_AFTER_HONORIFIC.has(word) && !NOT_NAMES.has(word)
+            && !HONORIFICS.has(word) && !STOPWORDS.has(word) && !GENERIC.has(word)
+            && matchAt(low, j + 1, OWNER_VERBS) === 0
+            && !(j + 2 < n && COMPOUNDS.has(word + ' ' + low[j + 2]))) {
+          return [bare[j] + ' ' + capitalizeFirst(bare[j + 1]), 'name'];
+        }
+      }
+    }
+    return ['', ''];
+  }
+  /* Vị trí cụm "giao cho <người phụ trách>" trong câu: [đầu cụm, ngay sau tên]; không có thì [-1, -1]. */
+  function delegationSpan(low, end, ownerParts) {
+    const size = ownerParts.length;
+    if (size === 0) return [-1, -1];
+    for (let i = 0; i < end; i++) {
+      const cue = matchAt(low, i, DELEGATION);
+      if (cue === 0) continue;
+      const j = i + cue;
+      for (let off = 0; off < 2; off++) {
+        if (off === 1 && !(j < end && HONORIFICS.has(low[j]))) break;
+        const at = j + off;
+        if (at + size > end) continue;
+        let ok = true;
+        for (let k = 0; k < size; k++) if (low[at + k] !== ownerParts[k]) { ok = false; break; }
+        if (ok) return [i, at + size];
+      }
+    }
+    return [-1, -1];
+  }
   /* Trả về [người phụ trách, loại, chắc chắn]. loại: participant | org | name | ''. */
   function locateOwner(sentence, participants) {
     const words = wsWords(sentence);
@@ -638,6 +713,9 @@
     if (n === 0) return ['', '', false];
     const bare = words.map(stripPunct);
     const low = bare.map((b) => b.toLowerCase());
+    // 0) Giao việc đích danh: người nhận việc mới là người phụ trách ("anh Hùng sẽ giao cho Bình liên hệ...")
+    const delegated = delegatedTo(words, bare, low, participants);
+    if (delegated[0]) return [delegated[0], delegated[1], true];
     let verbAt = -1;
     for (let i = 0; i < n; i++) if (matchAt(low, i, OWNER_VERBS) > 0) { verbAt = i; break; }
     // tên có thể cách động từ một từ đệm: "em Minh thì cần ..."
@@ -931,15 +1009,17 @@
   function bareParts(text) {
     return wsWords(text).map((w) => stripPunct(w).toLowerCase()).filter((p) => p);
   }
-  /* Rút câu giao việc thành đầu việc: bỏ "<ai> sẽ/cần/phải" ở đầu và hạn chót ở cuối (đã có cột riêng). */
+  /* Rút câu giao việc thành đầu việc: bỏ "<ai> sẽ/cần/phải" ở đầu, cụm "giao cho <ai>" và hạn chót ở cuối
+     (người phụ trách và hạn đã có cột riêng). */
   function makeTask(sentence, owner, due) {
     const cleaned = cleanSentence(sentence);
     const words = wsWords(cleaned);
     const n = words.length;
     const low = words.map((w) => stripPunct(w).toLowerCase());
     let start = 0;
+    const ownerParts = owner ? bareParts(owner) : [];
     if (owner) {
-      const parts = bareParts(owner);
+      const parts = ownerParts;
       const size = parts.length;
       if (size > 0) {
         for (let i = 0; i <= Math.min(n - size, 5); i++) {
@@ -974,6 +1054,21 @@
         if (ok) {
           end -= size;
           if (end - 1 > start && DUE_PREPOSITIONS.has(low[end - 1])) end -= 1;
+        }
+      }
+    }
+    if (ownerParts.length && start === 0) {
+      const span = delegationSpan(low, end, ownerParts);
+      const cue = span[0], after = span[1];
+      if (cue >= 0) {
+        if (end - after >= 2 && !CONJUNCTIONS.has(low[after]) && !CLAUSE_END.has(lastChar(words[after - 1]))) {
+          start = after;   // việc đứng sau tên: "giao cho Bình liên hệ nhà cung cấp"
+        } else if (after === end) {
+          // việc đứng trước: "việc liên hệ nhà cung cấp (thì sẽ được) giao cho Bình"
+          let cut = cue;
+          while (cut > 0 && DELEGATION_FILLERS.has(low[cut - 1])) cut -= 1;
+          const lead = TASK_LEADS.has(low[0]) ? 1 : 0;
+          if (cut - lead >= 3) { start = lead; end = cut; }
         }
       }
     }
@@ -1292,8 +1387,10 @@
     const analysis = meeting.analysis || {};
     const lines = ['# ' + meeting.title, '', '- Thời gian: ' + meeting.created_at];
     if (meeting.participants && meeting.participants.length) lines.push('- Người tham gia: ' + meeting.participants.join(', '));
-    lines.push('', '## Ý chính');
-    for (const s of analysis.summary || []) lines.push('- ' + s);
+    if (analysis.summary && analysis.summary.length) {   // chưa xử lý thì không in đề mục rỗng
+      lines.push('', '## Ý chính');
+      for (const s of analysis.summary) lines.push('- ' + s);
+    }
     if (analysis.decisions && analysis.decisions.length) {
       lines.push('', '## Quyết định');
       for (const d of analysis.decisions) lines.push('- ' + d);

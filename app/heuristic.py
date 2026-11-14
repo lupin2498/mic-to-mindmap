@@ -11,6 +11,7 @@ from .engine_data import DATA
 from .mindmap import normalize_mindmap
 from .textutil import (
     COMPOUNDS,
+    CONJUNCTIONS,
     GENERIC,
     HONORIFICS,
     STOPWORDS,
@@ -59,6 +60,7 @@ _OWNER_VERBS = _plain_index("owner_verbs")
 _MODALS = _plain_index("modals")
 _ORG_UNITS = _plain_index("org_units")
 _SUBJECTS = _plain_index("subject_pronouns")
+_DELEGATION = _plain_index("delegation_cues")
 _LEAD = _plain_index("lead_fillers")
 _TRAIL = _plain_index("trail_particles")
 _DECISION_SUBJECTS = _plain_index("decision_subjects")
@@ -77,6 +79,8 @@ NOT_NAMES = set(DATA["not_names"])
 NOT_NAMES_AFTER_HONORIFIC = set(DATA["not_names_after_honorific"])
 STUTTER = set(DATA["stutter_words"])
 DUE_PREPOSITIONS = set(DATA["due_prepositions"])
+DELEGATION_FILLERS = set(DATA["delegation_fillers"])
+TASK_LEADS = set(DATA["task_leads"])
 
 _DUE_RE = re.compile("|".join("(?:" + pattern + ")" for pattern in DATA["due_patterns"]))
 # "thứ hai", "thứ ba"... đứng đầu câu hoặc trước "là" nghĩa là "điều thứ hai", không phải ngày trong tuần
@@ -186,6 +190,97 @@ def _is_name_token(token: str) -> bool:
     return len(token) >= 2 and token[0].isupper() and token.replace(".", "").replace("-", "").isalpha()
 
 
+def _name_parts(name: str) -> list[str]:
+    return [p for p in [strip_punct(w).lower() for w in ws_words(name)] if p]
+
+
+def _delegated_to(words: list[str], bare: list[str], low: list[str], participants: list[str]) -> tuple[str, str]:
+    """Người được giao việc đích danh: tên đứng ngay sau "giao cho", "phân công"... ("việc này giao cho Bình").
+
+    Trả về (tên, loại); không có thì ("", "")."""
+    n = len(words)
+    for i in range(n):
+        cue = match_at(low, i, _DELEGATION)
+        if cue == 0:
+            continue
+        j = i + cue
+        if j >= n:
+            break
+        honor = 1 if low[j] in HONORIFICS and j + 1 < n else 0
+        # a) tên có trong danh sách người tham gia (có thể kèm xưng hô: "giao cho anh An")
+        best, best_size = "", 0
+        for name in participants:
+            label = normalize_ws(name)
+            parts = _name_parts(label)
+            size = len(parts)
+            if size == 0 or size <= best_size:
+                continue
+            for off in range(honor + 1):
+                at = j + off
+                if at + size > n:
+                    continue
+                ok = True
+                for k in range(size):
+                    if low[at + k] != parts[k]:
+                        ok = False
+                        break
+                if not ok:
+                    continue
+                if at + size < n and (low[at + size - 1] + " " + low[at + size]) in COMPOUNDS:
+                    continue   # "giao cho chi nhánh": "chi" ở đây không phải tên người
+                best, best_size = label, size
+                break
+        if best:
+            return best, "participant"
+        # b) tên riêng viết hoa, có thể kèm xưng hô: "giao cho Bình", "phân công chị Lan"
+        name_tokens: list[str] = []
+        k = j + honor
+        while k < n and len(name_tokens) < 3:
+            if not _is_name_token(bare[k]) or low[k] in NOT_NAMES:
+                break
+            name_tokens.append(bare[k])
+            if words[k][-1:] in (",", ";", ":", "."):
+                break
+            k += 1
+        if name_tokens:
+            return (bare[j] + " " if honor else "") + " ".join(name_tokens), "name"
+        # c) xưng hô + tên viết thường (văn bản nhận dạng giọng nói thường không viết hoa): "giao cho anh hùng tìm mặt bằng"
+        if honor:
+            word = low[j + 1]
+            if (len(word) >= 2 and word.isalpha() and word not in NOT_NAMES_AFTER_HONORIFIC and word not in NOT_NAMES
+                    and word not in HONORIFICS and word not in STOPWORDS and word not in GENERIC
+                    and match_at(low, j + 1, _OWNER_VERBS) == 0
+                    and not (j + 2 < n and (word + " " + low[j + 2]) in COMPOUNDS)):
+                return bare[j] + " " + capitalize_first(bare[j + 1]), "name"
+    return "", ""
+
+
+def _delegation_span(low: list[str], end: int, owner_parts: list[str]) -> tuple[int, int]:
+    """Vị trí cụm "giao cho <người phụ trách>" trong câu: (đầu cụm, ngay sau tên); không có thì (-1, -1)."""
+    size = len(owner_parts)
+    if size == 0:
+        return -1, -1
+    for i in range(end):
+        cue = match_at(low, i, _DELEGATION)
+        if cue == 0:
+            continue
+        j = i + cue
+        for off in range(2):
+            if off == 1 and not (j < end and low[j] in HONORIFICS):
+                break
+            at = j + off
+            if at + size > end:
+                continue
+            ok = True
+            for k in range(size):
+                if low[at + k] != owner_parts[k]:
+                    ok = False
+                    break
+            if ok:
+                return i, at + size
+    return -1, -1
+
+
 def locate_owner(sentence: str, participants: list[str]) -> tuple[str, str, bool]:
     """(người phụ trách, loại, chắc chắn).
 
@@ -197,6 +292,10 @@ def locate_owner(sentence: str, participants: list[str]) -> tuple[str, str, bool
         return "", "", False
     bare = [strip_punct(w) for w in words]
     low = [b.lower() for b in bare]
+    # 0) Giao việc đích danh: người nhận việc mới là người phụ trách ("anh Hùng sẽ giao cho Bình liên hệ...")
+    delegated, kind = _delegated_to(words, bare, low, participants)
+    if delegated:
+        return delegated, kind, True
     verb_at = -1
     for i in range(n):
         if match_at(low, i, _OWNER_VERBS) > 0:
@@ -545,14 +644,16 @@ def summary_limit(sentences: list[Sentence], style: dict | None) -> int:
 
 # ------------------------------------------------------------ việc cần làm
 def make_task(sentence: str, owner: str, due: str) -> str:
-    """Rút câu giao việc thành đầu việc: bỏ "<ai> sẽ/cần/phải" ở đầu và hạn chót ở cuối (đã có cột riêng)."""
+    """Rút câu giao việc thành đầu việc: bỏ "<ai> sẽ/cần/phải" ở đầu, cụm "giao cho <ai>" và hạn chót ở cuối
+    (người phụ trách và hạn đã có cột riêng)."""
     cleaned = clean_sentence(sentence)
     words = ws_words(cleaned)
     n = len(words)
     low = [strip_punct(w).lower() for w in words]
     start = 0
+    owner_parts = _name_parts(owner) if owner else []
     if owner:
-        parts = [p for p in [strip_punct(w).lower() for w in ws_words(owner)] if p]
+        parts = owner_parts
         size = len(parts)
         if size > 0:
             for i in range(0, min(n - size, 5) + 1):
@@ -590,6 +691,20 @@ def make_task(sentence: str, owner: str, due: str) -> str:
                 end -= size
                 if end - 1 > start and low[end - 1] in DUE_PREPOSITIONS:
                     end -= 1
+    if owner_parts and start == 0:
+        cue, after = _delegation_span(low, end, owner_parts)
+        if cue >= 0:
+            if (end - after >= 2 and low[after] not in CONJUNCTIONS
+                    and words[after - 1][-1:] not in (",", ";", ":", ".")):
+                start = after   # việc đứng sau tên: "giao cho Bình liên hệ nhà cung cấp"
+            elif after == end:
+                # việc đứng trước: "việc liên hệ nhà cung cấp (thì sẽ được) giao cho Bình"
+                cut = cue
+                while cut > 0 and low[cut - 1] in DELEGATION_FILLERS:
+                    cut -= 1
+                lead = 1 if low[0] in TASK_LEADS else 0
+                if cut - lead >= 3:
+                    start, end = lead, cut
     if end - start < 2:
         start, end = 0, n
     return truncate(capitalize_first(strip_terminal(" ".join(words[start:end]))), ITEM_CHARS)
