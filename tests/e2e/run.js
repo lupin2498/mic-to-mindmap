@@ -771,6 +771,36 @@ step('nhap-file: nhập bản ghi âm có sẵn → trình duyệt nghe file, ch
   eq(((await api('GET', '/api/meetings')).data || []).length, before, 'hủy thì không tạo cuộc họp');
 });
 
+step('nhap-file-ngat: dịch vụ nhận dạng tự tắt liên tiếp lúc đang nghe file thì file chỉ phát khi có bộ nhận dạng nghe, không mất câu', async (ctx) => {
+  const page = ctx.page = await open(null, DESKTOP);
+  await withFakeMic(page);
+  await page.goto(API + '/');
+  await until(() => page.evaluate(() => /Trình duyệt nghe file/.test(document.querySelector('#file-note').textContent)), 'sẵn sàng');
+  // ghi lại mỗi lần file được cho phát: lúc đó có bộ nhận dạng nào đang nghe hay không
+  await page.evaluate(() => {
+    window.__plays = [];
+    const play = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function () { window.__plays.push(!!window.__sr.active); return play.call(this); };
+  });
+  await page.setInputFiles('#audio-file', { name: 'Họp mạng chập chờn.wav', mimeType: 'audio/wav', buffer: wavBuffer(5) });
+  await until(() => page.evaluate(() => !!(window.__sr.active && window.__sr.track)), 'bắt đầu nghe file');
+  await say(page, SPOKEN[0]);
+  // dịch vụ tắt ngay sau khi bật, hai lần liền: ứng dụng tạm dừng file, chờ một lúc rồi bật bộ nhận dạng mới.
+  // Hẹn giờ "phát phòng khi dịch vụ không báo đã bật" của bộ nhận dạng cũ không được cho file phát lúc chưa ai nghe.
+  for (let i = 1; i <= 2; i++) {
+    const starts = await page.evaluate(() => window.__sr.starts);
+    await page.evaluate(() => window.__srEnd());
+    await until(() => page.evaluate((n) => window.__sr.starts > n && !!window.__sr.active, starts), `bật lại lần ${i}`, 5000);
+  }
+  await page.waitForTimeout(900);   // quá hạn mọi hẹn giờ của các bộ nhận dạng đã tắt
+  eq(await page.evaluate(() => window.__plays.filter((listening) => !listening).length), 0, 'số lần phát file khi không có bộ nhận dạng nào nghe');
+  for (const sentence of SPOKEN.slice(1, 5)) await say(page, sentence);
+  await until(() => page.evaluate(() => document.querySelector('#tab-result').classList.contains('active')
+    && document.querySelector('#result-status').hidden), 'tự tóm tắt sau khi chuyển xong', 20000);
+  const transcript = await page.inputValue('#edit-transcript');
+  for (const sentence of SPOKEN.slice(0, 5)) assert(transcript.toLowerCase().includes(sentence.toLowerCase()), `đủ câu "${sentence}"`);
+});
+
 step('nen-xong-muon: bản ghi mới không bị xóa khi cuộc họp trước xử lý xong', async (ctx) => {
   const page = ctx.page = await open(null, DESKTOP);
   await withFakeMic(page);

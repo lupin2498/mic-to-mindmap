@@ -585,7 +585,9 @@
         fail('unsupported', err && err.message);
         return;
       }
-      later(playAudio, 800);   // phòng khi dịch vụ không báo onstart
+      // phòng khi dịch vụ không báo onstart. Chỉ cho đúng bộ nhận dạng này: nó đã tắt (dịch vụ tự ngắt, đang chờ bật bộ
+      // mới) mà hẹn giờ vẫn cho file phát thì đoạn phát lúc không ai nghe mất trắng khỏi văn bản
+      later(() => { if (rec === r) playAudio(); }, 800);
     }
     const promise = new Promise((resolve, reject) => {
       settle = { resolve, reject };
