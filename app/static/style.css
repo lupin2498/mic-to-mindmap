@@ -256,4 +256,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #c7d2fe; border-c
   .mindmap-container { height: 420px; }
   .mindmap-container.live { height: 280px; }
   .server-box { max-width: none; width: 100%; }
+  /* nút có chữ dài ("Lưu chỉnh sửa (ứng dụng sẽ học theo)") xuống dòng thay vì đẩy thẻ tràn ra ngoài màn hình */
+  .btn { white-space: normal; max-width: 100%; }
 }

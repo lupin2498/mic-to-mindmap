@@ -980,6 +980,18 @@ step('chu-dai: chữ rất dài không dấu cách không đẩy nút ra khỏi 
     assert(await noOverflow(page), `tab kết quả không tràn ngang (${viewport.width}px)`);
     const cards = await page.evaluate(() => Array.from(document.querySelectorAll('#tab-result .card')).filter((c) => c.scrollWidth > c.clientWidth + 1).length);
     eq(cards, 0, `số thẻ bị nội dung đẩy tràn (${viewport.width}px)`);
+    // phông của máy CI rộng hơn máy phát triển: giãn chữ thêm 1px để khẳng định không phụ thuộc phông của máy chạy test
+    // (CI từng đỏ ở đây vì hai nút "Lưu ..." không xuống dòng)
+    const wide = await page.evaluate(() => {
+      const st = document.createElement('style');
+      st.textContent = '* { letter-spacing: 1px !important; }';
+      document.head.appendChild(st);
+      const bad = Array.from(document.querySelectorAll('#tab-result .card')).filter((c) => c.scrollWidth > c.clientWidth + 1).length
+        + (document.scrollingElement.scrollWidth > document.documentElement.clientWidth + 1 ? 1 : 0);
+      st.remove();
+      return bad;
+    });
+    eq(wide, 0, `chữ rộng hơn vẫn không đẩy thẻ hay trang tràn ngang (${viewport.width}px)`);
     if (viewport === DESKTOP) await page.context().close();
   }
   await api('DELETE', `/api/meetings/${id}`);
