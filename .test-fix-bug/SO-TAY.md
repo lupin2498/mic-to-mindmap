@@ -46,7 +46,9 @@
 - [ ] Thử nhập file ghi âm trên máy thật: dịch vụ nào của Android nhận `EXTRA_AUDIO_SOURCE` (bộ nhận dạng trên máy, ứng dụng Google, máy không có Google), file m4a/mp3/amr/ogg dài 1 giờ, iPhone có và không có nhận dạng tiếng Việt trên máy.
 
 ## Ghi nhanh
-- (trống)
+- [2026-11-14] Lượt test-fix-bug 14/11 (nhánh ccr-917aaad6-9ufq0r): mốc pytest 120/120, E2E 34/34, JVM 41/41.
+- [2026-11-14] Một bước E2E khẳng định ba lỗi thì trước khi sửa chỉ lỗi đầu tiên đỏ; muốn biết từng khẳng định có bắt được lỗi của nó thì chạy lại bước với từng bản sửa một phần (đã làm cho `doc-lap-nhap-file-roi-di`: bản gốc đỏ ở hỏi lại khi đóng trang, thêm sửa 1 đỏ ở "không kéo đi", thêm sửa 2 đỏ ở "hủy khi bấm cuộc họp mới").
+- [2026-11-14] Việc chạy lâu (chuyển file ghi âm mất nhiều phút) cũng phải được tính ở mọi chỗ đã chặn cho ghi âm: nút "Cuộc họp mới", hộp hỏi khi rời trang, mốc "người dùng đã mở cuộc họp khác" để không kéo họ đi.
 
 ## Nhật ký
 - 2026-11-13 | nhánh ccr-58431d82-km60c8 | lượt 1: toàn bộ backend, giao diện, cấu hình di động | pytest 45 → 94, E2E 0 → 19 | sửa 27 lỗi (7 nghiêm trọng) trong 5 commit | phiên bị ngắt trước khi viết sổ tay và báo cáo | không rõ thời lượng

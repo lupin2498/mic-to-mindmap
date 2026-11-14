@@ -308,6 +308,9 @@
     state.current = null;
     openSeq += 1; // hủy lần mở cuộc họp còn đang chờ trả lời
     if (isRecording()) stopRecording({ discard: true });
+    // Đang chuyển file ghi âm thành văn bản: dừng hẳn (file gốc vẫn còn trên máy, nhập lại được). Để chạy tiếp thì phần
+    // văn bản đã có bị xóa ở dưới, còn phần sau vẫn chảy vào rồi tự thành một cuộc họp thiếu cả đoạn đầu.
+    if (fileJob) fileJob.job.cancel();
     discardRecording();
     $('#meeting-title').value = '';
     $('#meeting-participants').value = '';
@@ -804,7 +807,8 @@
       },
       onProgress: (progress) => { if (fileJob === current) showFileProgress(progress); },
     });
-    current = { job, file, ext, duration, provider };
+    // nav: chuyển file có thể mất nhiều phút; người dùng mở cuộc họp khác trong lúc đó thì xong cũng không kéo họ đi
+    current = { job, file, ext, duration, provider, nav: openSeq };
     fileJob = current;
     fileProgress = null;
     setFileBusy(true);
@@ -845,7 +849,7 @@
       $('#rec-state').textContent = 'Mới chuyển được một phần file. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý phần đã có.';
     } else if ($('#auto-process').checked) {
       $('#rec-state').textContent = 'Đã chuyển xong file thành văn bản. Đang tóm tắt và vẽ sơ đồ tư duy…';
-      processRecording();
+      processRecording(current.nav);
     } else {
       $('#rec-state').textContent = 'Đã chuyển xong file thành văn bản. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý.';
     }
@@ -873,12 +877,14 @@
     $('#btn-process').disabled = !!text;
     $('#btn-analyze-text').disabled = !!text;
   }
-  async function processRecording() {
+  /* navSince: openSeq lúc người dùng bắt đầu việc dẫn tới lần gửi này (bỏ trống: lúc gửi). */
+  async function processRecording(navSince) {
     const capture = state.capture;
     if (!capture) { toast('Chưa có bản ghi âm', true); return; }
     try {
       setProgress('Đang tạo cuộc họp…');
-      const nav = openSeq;   // để biết người dùng có mở cuộc họp khác trong lúc đang gửi hay không
+      // để biết người dùng có mở cuộc họp khác trong lúc đang gửi (hay đang chuyển file) hay không
+      const nav = typeof navSince === 'number' ? navSince : openSeq;
       const payload = meetingPayload();
       if (!payload.title) payload.title = autoTitle(capture.text, capture.source === 'file' ? 'Bản ghi' : 'Ghi âm');
       if (capture.duration) payload.duration_sec = capture.duration;
@@ -926,7 +932,7 @@
       startPolling(meeting.id, { text, nav });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
-  $('#btn-process').addEventListener('click', processRecording);
+  $('#btn-process').addEventListener('click', () => processRecording());
   $('#btn-analyze-text').addEventListener('click', analyzeText);
 
   // Mỗi cuộc họp đang xử lý có một bộ hỏi trạng thái riêng: mở/phân tích lại cuộc họp khác không làm
@@ -1276,7 +1282,8 @@
 
   // Đóng/tải lại trang khi đang ghi âm hoặc còn bản ghi chưa gửi: hỏi lại để không mất bản ghi
   window.addEventListener('beforeunload', (e) => {
-    if (isRecording() || rec.stopping || state.capture) { e.preventDefault(); e.returnValue = ''; }
+    // đang chuyển file ghi âm thành văn bản cũng vậy: tải lại là mất hết phần đã nhận dạng (có khi đã mất cả chục phút)
+    if (isRecording() || rec.stopping || state.capture || fileJob) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // ----------------------------------------------------------------- init

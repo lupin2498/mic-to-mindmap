@@ -1369,6 +1369,58 @@ step('doc-lap-nhap-file-loi: máy không hỗ trợ, plugin báo lỗi, lỗi gi
   eq((await nativeCalls(page, 'keepAwake')).pop(), { on: false }, 'thôi giữ màn hình sáng');
 });
 
+step('doc-lap-nhap-file-roi-di: đang chuyển file mà mở cuộc họp khác, đóng trang hay bấm cuộc họp mới: không kéo đi, hỏi lại, không ra cuộc họp thiếu đầu', async (ctx) => {
+  const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
+  let asked = 0;
+  page.on('dialog', async (d) => { if (d.type() === 'beforeunload') { asked += 1; await d.dismiss(); } else await d.accept(); });
+  await until(() => page.evaluate(() => /ngay trên điện thoại/.test(document.querySelector('#file-note').textContent)), 'sẵn sàng');
+  await analyzeText(page, 'Họp đang xem');
+  await waitResult(page, 'Họp đang xem');
+  // Chuyển một file dài (trên máy thật mất nhiều phút): trong lúc đó người dùng mở cuộc họp cũ ra xem và sửa
+  await page.tap('.tab[data-tab="record"]');
+  await page.fill('#meeting-title', '');
+  await page.setInputFiles('#audio-file', { name: 'Họp chuyển file dài.m4a', mimeType: 'audio/mp4', buffer: Buffer.alloc(4000, 7) });
+  await until(async () => (await nativeCalls(page, 'fileTranscribe')).length === 1, 'bắt đầu nhận dạng file');
+  for (const sentence of SPOKEN.slice(0, 3)) await page.evaluate((t) => window.__nativeEmit('fileSegment', { id: 'f1', text: t }), sentence);
+  await page.tap('#meeting-list li:has-text("Họp đang xem")');
+  await waitResult(page, 'Họp đang xem');
+  await page.fill('#edit-summary', '- đang sửa dở, đừng kéo tôi đi');
+  // đóng hay tải lại trang lúc này là mất hết phần đã nhận dạng: phải hỏi lại
+  await page.close({ runBeforeUnload: true });
+  await until(() => asked === 1, 'hỏi lại trước khi rời trang khi đang chuyển file');
+  assert(!page.isClosed(), 'trang còn mở sau khi người dùng chọn ở lại');
+  for (const sentence of SPOKEN.slice(3, 6)) await page.evaluate((t) => window.__nativeEmit('fileSegment', { id: 'f1', text: t }), sentence);
+  await page.evaluate(() => window.__nativeFileDone(''));
+  await until(() => page.evaluate(() => /Họp chuyển file dài.*xử lý xong/.test(document.querySelector('#toast').textContent)), 'báo cuộc họp từ file đã xong');
+  await page.waitForTimeout(300);
+  eq(await page.inputValue('#result-title'), 'Họp đang xem', 'vẫn ở cuộc họp đang xem');
+  eq(await page.inputValue('#edit-summary'), '- đang sửa dở, đừng kéo tôi đi', 'nội dung đang sửa còn nguyên');
+  await page.tap('#meeting-list li:has-text("Họp chuyển file dài")');
+  await waitResult(page, 'Họp chuyển file dài');
+  const full = await page.inputValue('#edit-transcript');
+  assert(full.startsWith('Hôm nay chúng ta họp về kế hoạch ra mắt sản phẩm mới.') && full.split('.').length > 6, `đủ cả file: ${full.slice(0, 80)}`);
+
+  // Bấm "Cuộc họp mới" giữa lúc chuyển file: dừng hẳn việc chuyển, không để phần sau tự thành cuộc họp thiếu đoạn đầu
+  await page.tap('.tab[data-tab="record"]');
+  await page.setInputFiles('#audio-file', { name: 'Họp bị bỏ dở.m4a', mimeType: 'audio/mp4', buffer: Buffer.alloc(3000, 8) });
+  await until(async () => (await nativeCalls(page, 'fileTranscribe')).length === 2, 'lần hai');
+  for (const sentence of SPOKEN.slice(0, 3)) await page.evaluate((t) => window.__nativeEmit('fileSegment', { id: 'f2', text: t }), sentence);
+  const before = await page.evaluate(() => document.querySelectorAll('#meeting-list li .title').length);
+  await page.tap('#btn-new-meeting');
+  await until(async () => (await nativeCalls(page, 'fileCancel')).some((c) => c.id === 'f2'), 'báo plugin dừng nhận dạng file');
+  await until(() => page.evaluate(() => document.querySelector('#file-progress').hidden), 'ẩn tiến trình chuyển file');
+  assert(await page.isEnabled('#btn-record'), 'ghi âm lại được');
+  eq((await nativeCalls(page, 'keepAwake')).pop(), { on: false }, 'thôi giữ màn hình sáng');
+  await page.evaluate(() => window.__nativeEmit('fileSegment', { id: 'f2', text: 'câu về muộn của file đã bỏ' }));
+  await page.waitForTimeout(500);
+  assert(await page.isHidden('#live-transcript') && await page.isHidden('#preview'), 'không còn văn bản của file đã bỏ');
+  eq(await page.evaluate(() => document.querySelectorAll('#meeting-list li .title').length), before, 'không tự tạo cuộc họp từ phần còn lại');
+  // không còn gì để mất: đóng trang không bị hỏi
+  await page.close({ runBeforeUnload: true });
+  await until(() => page.isClosed(), 'đóng trang ngay');
+  eq(asked, 1, 'số lần bị hỏi');
+});
+
 step('di-dong-www: máy chủ AI là tùy chọn, nhập địa chỉ thì chạy chéo origin, bỏ đi thì về độc lập', async (ctx) => {
   const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
   await analyzeText(page, 'Ghi chú trên máy');
