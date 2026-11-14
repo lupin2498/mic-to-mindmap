@@ -1,8 +1,8 @@
 {
   "name": "mic-to-mindmap-mobile",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Ứng dụng di động Mic to Mindmap (Capacitor) - kết nối tới máy chủ AI local trong mạng LAN",
+  "description": "Ứng dụng di động Mic to Mindmap (Capacitor): nói ra văn bản, tự tóm tắt và vẽ sơ đồ tư duy ngay trên máy, không cần AI",
   "scripts": {
     "build:web": "node build-web.js",
     "sync": "npm run build:web && npx cap sync",

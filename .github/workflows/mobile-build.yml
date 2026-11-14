@@ -52,7 +52,8 @@ jobs:
         run: |
           chmod +x android/gradlew
           cd android
-          ./gradlew assembleDebug assembleRelease --no-daemon --stacktrace
+          # testDebugUnitTest: kiểm vòng lặp nhận dạng giọng nói liên tục (SpeechLoopTest) trước khi đóng gói
+          ./gradlew testDebugUnitTest assembleDebug assembleRelease --no-daemon --stacktrace
       - name: Thu thập APK
         run: |
           mkdir -p dist
@@ -124,7 +125,7 @@ jobs:
             - `mic-to-mindmap-release.apk` / `mic-to-mindmap-debug.apk`: cài trực tiếp trên Android (bật "Cài ứng dụng không rõ nguồn gốc").
             - `mic-to-mindmap-unsigned.ipa`: bộ cài iOS **chưa ký**. Ký bằng Apple ID qua Sideloadly/AltStore, hoặc mở `mobile/ios/App/App.xcodeproj` bằng Xcode, chọn Team của bạn rồi cài lên máy.
 
-            Trong ứng dụng, nhập địa chỉ máy chủ AI local (máy tính chạy `./run.sh --host 0.0.0.0`), ví dụ `http://192.168.1.10:8000`.
+            Ứng dụng tự chạy trên điện thoại, không cần máy chủ và không cần AI: nói là ra văn bản, dừng là tự tóm tắt và vẽ sơ đồ tư duy. Lần đầu ghi âm hãy cho phép quyền micro (iOS hỏi thêm quyền nhận dạng giọng nói). Máy chủ AI trong mạng LAN (`./run.sh --host 0.0.0.0`) chỉ là tùy chọn, nhập ở mục "Máy chủ AI" đầu trang.
           files: |
             artifacts/**/*.apk
             artifacts/**/*.ipa

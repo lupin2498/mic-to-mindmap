@@ -36,6 +36,13 @@
         </provider>
     </application>
 
+    <!-- Android 11+: phải khai báo thì mới thấy và gọi được dịch vụ nhận dạng giọng nói của máy -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+    </queries>
+
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />

@@ -8,8 +8,9 @@ on:
       - "tests/**"
       - "mobile/build-web.js"
       - "mobile/capacitor.config.json"
-      - "mobile/android/app/src/main/AndroidManifest.xml"
-      - "mobile/ios/App/App/Info.plist"
+      - "mobile/android/app/src/**"
+      - "mobile/ios/App/App/**"
+      - "mobile/ios/App/App.xcodeproj/project.pbxproj"
       - "requirements*.txt"
       - ".github/workflows/tests.yml"
   workflow_dispatch:
@@ -39,14 +40,14 @@ jobs:
           node-version: 22
       - name: Cài thư viện Python
         run: pip install -r requirements-dev.txt
-      - name: pytest (backend, Ollama giả, Whisper giả, fuzz, cấu hình di động)
+      - name: pytest (backend, bộ máy Python so với JavaScript, Ollama giả, Whisper giả, fuzz, cấu hình di động)
         run: python -m pytest -q
       - name: Cài Playwright + Chromium
         working-directory: tests/e2e
         run: |
           npm install --no-audit --no-fund
           npx playwright install --with-deps chromium
-      - name: E2E giao diện (máy tính, 390px, mobile/www khác origin)
+      - name: E2E giao diện (máy tính, 390px, bản độc lập mobile/www, nhận dạng giọng nói giả)
         env:
           E2E_OUT: ${{ runner.temp }}/e2e
           E2E_GREP: ${{ github.event.inputs.grep }}

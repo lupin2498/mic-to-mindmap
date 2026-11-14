@@ -25,9 +25,11 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Ứng dụng cần micro để ghi âm cuộc họp.</string>
+	<string>Ứng dụng cần micro để ghi âm và chuyển lời nói thành văn bản.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Ứng dụng dùng nhận dạng giọng nói của máy để chuyển lời bạn nói thành văn bản, rồi tóm tắt và vẽ sơ đồ tư duy.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Ứng dụng kết nối tới máy chủ AI local trong mạng nội bộ của bạn.</string>
+	<string>Chỉ khi bạn nhập địa chỉ máy chủ AI (tùy chọn): ứng dụng kết nối tới máy chủ đó trong mạng nội bộ của bạn.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>
