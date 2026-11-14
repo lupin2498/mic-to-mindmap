@@ -234,7 +234,9 @@ async function waitResult(page, title) {
     && document.querySelector('#result-title').value === t && document.querySelector('#result-status').hidden, title), `hiện kết quả của "${title}"`);
 }
 const activeTab = (page) => page.evaluate(() => document.querySelector('.tab.active').dataset.tab);
-const noOverflow = (page) => page.evaluate(() => document.scrollingElement.scrollWidth <= window.innerWidth + 1);
+/* So với bề rộng khung nhìn bố cục (clientWidth), không phải innerWidth: trên điện thoại trang rộng hơn màn hình thì trình
+   duyệt thu nhỏ cả trang và innerWidth rộng theo nội dung, nên so với innerWidth thì tràn ngang vẫn "đạt". */
+const noOverflow = (page) => page.evaluate(() => document.scrollingElement.scrollWidth <= document.documentElement.clientWidth + 1);
 
 // =============================================================== các bước
 step('khoi-dong: trạng thái rỗng, huy hiệu cho biết đang chạy không cần AI, không lỗi console', async (ctx) => {
@@ -1066,6 +1068,39 @@ step('dien-thoai: bố cục 390px không tràn ngang, mind map đọc được'
   await page.setViewportSize({ width: 844, height: 390 });
   await page.tap('.tab[data-tab="result"]');
   assert(await noOverflow(page), 'xoay ngang không tràn');
+});
+
+step('mindmap-doi-cao: thanh địa chỉ hay bàn phím ảo chỉ đổi chiều cao thì sơ đồ giữ mức phóng to và ô đang sửa', async (ctx) => {
+  await seedMeeting('Họp phóng to trên điện thoại');
+  const page = ctx.page = await open(API + '/', PHONE);
+  await page.tap('#meeting-list li:has-text("Họp phóng to trên điện thoại")');
+  await waitResult(page, 'Họp phóng to trên điện thoại');
+  const transform = () => page.evaluate(() => document.querySelector('#mindmap svg > g').getAttribute('transform'));
+  const fitted = await transform();
+  // chữ trên màn hẹp nhỏ: người dùng phóng to để đọc
+  await page.tap('#mm-zoom-in');
+  await page.tap('#mm-zoom-in');
+  const zoomed = await transform();
+  assert(zoomed !== fitted, 'đã phóng to');
+  // cuộn trang làm thanh địa chỉ của trình duyệt ẩn/hiện: chỉ chiều cao cửa sổ đổi
+  await page.setViewportSize({ width: 390, height: 900 });
+  await page.waitForTimeout(150);
+  eq(await transform(), zoomed, 'thanh địa chỉ ẩn đi không làm mất mức phóng to');
+  // sửa chữ một nút: bàn phím ảo mở ra (WebView của app co chiều cao lại), ô sửa phải còn nằm đúng chỗ nút
+  await page.locator('#mindmap .mm-node:not(.root)').first().dblclick();
+  await page.waitForSelector('.mm-editor');
+  const box = () => page.evaluate(() => { const r = document.querySelector('.mm-editor').getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top)]; });
+  const before = await box();
+  await page.setViewportSize({ width: 390, height: 520 });
+  await page.waitForTimeout(150);
+  eq(await transform(), zoomed, 'bàn phím mở ra không làm sơ đồ nhảy');
+  eq(await box(), before, 'ô sửa vẫn nằm trên nút đang sửa');
+  await page.fill('.mm-editor', 'Nhánh sửa khi bàn phím mở');
+  await page.press('.mm-editor', 'Enter');
+  assert((await page.textContent('#mindmap')).includes('Nhánh sửa khi bàn phím mở'), 'lưu được chữ vừa sửa');
+  // xoay ngang: bề ngang đổi thì vẽ lại cho vừa khung như cũ
+  await page.setViewportSize({ width: 844, height: 390 });
+  await until(async () => (await transform()) !== zoomed, 'xoay máy thì sơ đồ vẽ lại cho vừa bề ngang mới');
 });
 
 // ===================================================== bản độc lập (mobile/www)

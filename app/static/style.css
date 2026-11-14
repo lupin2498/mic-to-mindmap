@@ -53,6 +53,9 @@ small, .small { font-size: 12.5px; }
 .badge.off { background: #fef3c7; color: #92400e; border-color: #fde68a; }
 
 .layout { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 61px); }
+/* cột lưới mặc định không co nhỏ hơn bề rộng tối thiểu của nội dung: trên điện thoại 390px cả trang rộng ra 399px,
+   kéo ngang được và trình duyệt thu nhỏ cả trang */
+.layout > * { min-width: 0; }
 .sidebar {
   background: var(--card); border-right: 1px solid var(--border); padding: 16px; display: flex;
   flex-direction: column; gap: 12px; position: sticky; top: 61px; height: calc(100vh - 61px); overflow: auto;

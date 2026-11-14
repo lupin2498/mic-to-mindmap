@@ -386,8 +386,16 @@
         // nhấc một trong hai ngón: ngón còn lại tiếp tục kéo từ vị trí hiện tại, không giật về vị trí cũ
         touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
       });
-      // xoay máy/đổi cỡ cửa sổ: bố cục một phía hay hai phía tùy bề rộng nên phải vẽ lại
-      window.addEventListener('resize', () => { if (this.tree) { this.render(); this.fit(); } });
+      // xoay máy/đổi cỡ cửa sổ: bố cục một phía hay hai phía tùy bề rộng nên phải vẽ lại. Chỉ chiều cao đổi (thanh địa
+      // chỉ ẩn/hiện khi cuộn trang, bàn phím ảo mở lúc đang sửa chữ trong nút) thì giữ nguyên mức phóng to người dùng
+      // đã chọn và ô đang sửa. Đo bề ngang khung nhìn bố cục: innerWidth đổi theo cả lúc trình duyệt di động thu phóng.
+      let lastWidth = document.documentElement.clientWidth;
+      window.addEventListener('resize', () => {
+        const width = document.documentElement.clientWidth;
+        if (width === lastWidth) return;
+        lastWidth = width;
+        if (this.tree) { this.render(); this.fit(); }
+      });
     }
     select(node) {
       if (this.selected === node) return; // không vẽ lại giữa hai lần nhấp của một cú nhấp đúp
