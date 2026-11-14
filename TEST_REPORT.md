@@ -1,5 +1,71 @@
 # Báo cáo kiểm thử và sửa lỗi: Mic to Mindmap
 
+# Đợt 14/11/2026: phần không cần AI và nhập bản ghi âm có sẵn
+
+Nhánh `ccr-917aaad6-9ufq0r`, mốc ban đầu là commit `b965832`. Phạm vi: những gì thêm sau đợt 13/11 (bộ máy tóm tắt
+không cần AI hai bản Python/JavaScript, nhận dạng giọng nói của thiết bị, nhập bản ghi âm có sẵn, chế độ độc lập, plugin
+Android/iOS). Thời lượng khoảng một giờ.
+
+## 1. Môi trường và phương pháp
+
+| Hạng mục | Giá trị |
+|---|---|
+| Tại chỗ | Linux, Python 3, Node 22, Playwright với Chromium; javac + JUnit cho phần Java thuần, biên dịch cả plugin với `android-all.jar` và `classes.jar` của Capacitor |
+| CI | `Tests (pytest + Playwright)` và `Mobile build (Android APK + iOS IPA)` (41 → 42 test JVM, biên dịch Swift trên macOS) |
+| Không có | Thiết bị, máy ảo Android, Xcode, Whisper, Ollama, Firefox, WebKit |
+
+- Rà bằng mắt từng luồng bất đồng bộ của `speech.js`, `app.js` (nhập file), `FileRecognizer`/`FileSession`/`FilePump`/`SpeechPlugin` (Android) và `FileTranscriptionJob` (iOS): lời gọi không bao giờ trả lời, hẹn giờ của đối tượng đã chết, tài nguyên không đóng, chặn đã có cho ghi âm nhưng chưa có cho nhập file.
+- So bộ máy Python với JavaScript thêm 10 hạt giống ngẫu nhiên (khoảng 50.000 ca, ngoài 5.000 ca của bộ test): khớp hết, trước và sau khi sửa.
+- Chạy bộ máy trên văn bản nhận dạng giọng nói tự viết (một mạch không dấu câu, nhiều mốc thời gian).
+- Nghi ngờ khẳng định lỏng: đo cỡ chữ thật của sơ đồ trên màn 390px, đo phần tử tràn ngang theo `clientWidth`.
+- Mỗi lỗi có test đỏ trước khi sửa. Bước E2E khẳng định ba lỗi thì chạy lại với từng bản sửa một phần để chắc từng khẳng định bắt được lỗi của nó.
+
+## 2. Kết quả
+
+| Bộ test | Trước | Sau |
+|---|---|---|
+| pytest | 120 đạt | 122 đạt / 122 |
+| E2E Playwright | 34 bước đạt | 37 bước đạt / 37 |
+| JVM (Android, chạy tại chỗ bằng JUnit; CI chạy `gradlew testDebugUnitTest`) | 41 đạt | 42 đạt / 42 |
+
+## 3. Lỗi đã sửa
+
+| # | Mức độ | Lỗi người dùng thấy | Nguyên nhân | Nơi sửa | Commit | Test hồi quy |
+|---|---|---|---|---|---|---|
+| 1 | Cao | Mở một cuộc họp cũ ra sửa trong lúc đang chuyển file ghi âm (việc mất nhiều phút): chuyển xong là bị kéo sang kết quả của file, phần đang sửa mất | Mốc "người dùng đã mở cuộc họp khác" (openSeq) lấy lúc gửi lên, không phải lúc bắt đầu chuyển file | `app/static/app.js` | `cf7c4a3` | E2E `doc-lap-nhap-file-roi-di` |
+| 2 | Cao | Bấm "Cuộc họp mới" giữa lúc chuyển file: văn bản đã có bị xóa nhưng việc chuyển vẫn chạy, phần còn lại tự thành một cuộc họp thiếu cả đoạn đầu | Nút chỉ bỏ bản ghi đang ghi, không dừng việc chuyển file | `app/static/app.js` | `cf7c4a3` | E2E `doc-lap-nhap-file-roi-di` |
+| 3 | Cao | Đóng hoặc tải lại trang giữa lúc chuyển file: không hỏi, mất hết phần đã nhận dạng | Hộp hỏi `beforeunload` không tính việc chuyển file | `app/static/app.js` | `cf7c4a3` | E2E `doc-lap-nhap-file-roi-di` |
+| 4 | Trung bình | Trình duyệt nhận dạng file: dịch vụ tự tắt hai lần liền (mạng chập chờn) thì file vẫn phát lúc chưa có bộ nhận dạng nào nghe, đoạn đó mất khỏi văn bản | Hẹn giờ "phát phòng khi không có onstart" không gắn với bộ nhận dạng đã đặt nó | `app/static/speech.js` | `45c6f8d` | E2E `nhap-file-ngat` |
+| 5 | Trung bình | Văn bản nói một mạch: "trước thứ năm tuần sau", "hạn là cuối tuần này" bị cắt đôi, việc cần làm mất hạn chót; việc có hạn "hôm nay" (từ "hôm nay mình họp") thay vì "trước thứ năm tuần sau" | Cắt bắt buộc ở từ thứ 28 không tránh cụm thời hạn; lấy mốc thời gian đầu tiên trong câu | `app/textutil.py`, `app/heuristic.py`, `app/static/engine.js` | `62d4b6f` | `test_engine.py::test_run_on_speech_keeps_deadlines_whole_and_prefers_real_deadlines`, `::test_due_prefers_a_marked_deadline_over_a_narrative_time`, mẫu `vi_speech_run_on` trong bộ so Python/JavaScript |
+| 6 | Trung bình | Trên điện thoại 390px (web và app) trang kết quả rộng 399px: kéo ngang được, trình duyệt thu nhỏ cả trang | Cột lưới `1fr` của `.layout` không co nhỏ hơn bề rộng tối thiểu của nội dung | `app/static/style.css` | mục 6 | E2E `dien-thoai`, `doc-lap-ghi-am` (khẳng định tràn ngang đã siết) |
+| 7 | Trung bình | Phóng to sơ đồ để đọc rồi cuộn trang (thanh địa chỉ ẩn) hoặc sửa chữ một nút (bàn phím ảo mở): sơ đồ nhảy về mức vừa khung, ô sửa lệch khỏi nút | Mọi sự kiện resize đều vẽ lại và fit, kể cả khi chỉ chiều cao đổi | `app/static/mindmap.js` | mục 6 | E2E `mindmap-doi-cao` |
+| 8 | Thấp | Android: chuyển file gửi vài chục sự kiện tiến trình mỗi giây qua cầu nối, mỗi lần giao diện đếm lại toàn bộ số từ (file 1 giờ: 28.126 sự kiện) | Báo tiến trình cho mỗi khối 4096 byte | `FileSession.java` | `d2cc53d` | `FileSessionTest.progressIsReportedInSmallStepsNotOncePerPipeChunk` |
+| 9 | Thấp | Android: mỗi lần mở dịch vụ nhận dạng thất bại rò một file descriptor | Đầu ghi của đường ống chỉ được đóng khi đã giao cho luồng bơm | `FileRecognizer.java` | `d2cc53d` | chỉ biên dịch được (không có máy ảo) |
+| 10 | Hạ tầng test | Khẳng định "không tràn ngang" đạt cả khi trang tràn 9px | So `scrollWidth` với `innerWidth`, mà trên điện thoại innerWidth rộng ra theo nội dung | `tests/e2e/run.js` | mục 6 | đỏ ở `dien-thoai`, `doc-lap-ghi-am` với CSS cũ |
+
+## 4. Lỗi còn lại và hạn chế đã biết
+
+1. **Chữ của sơ đồ trên màn 390px cao 8,3px** (cỡ 13 nhân tỉ lệ 0,64 để ba cấp vừa bề ngang), dưới mức 11-12px thường khuyên dùng trên điện thoại. Đây là đánh đổi thiết kế (vừa bề ngang, không kéo ngang) nên không đổi trong đợt này; cách làm lớn hơn: tăng cỡ chữ ở bố cục hẹp (nút nhiều dòng hơn) hoặc cho kéo ngang. Người dùng phóng to được và nay mức phóng to không còn bị mất khi cuộn.
+2. Bộ máy không cần AI: "bình ơi em phụ trách ..." chưa nhận ra Bình là người phụ trách; đầu việc còn đuôi "nhé hạn là" sau khi tách hạn chót ra cột riêng; câu nói một mạch vẫn có thể gộp hai việc vào một câu (việc của Hà trong mẫu `vi_speech_run_on` thành quyết định vì cùng câu với "chốt lại").
+3. Chế độ độc lập (`local.js`): đọc, sửa, ghi một cuộc họp không trong một giao dịch IndexedDB; xóa cuộc họp đúng lúc đang lưu file âm thanh lớn có thể làm nó sống lại (khoảng trống hẹp, chưa tái hiện qua giao diện).
+4. Chọn file trong mấy mili giây đầu, trước khi plugin trả lời `fileSupport`, sẽ bị báo "máy chưa hỗ trợ".
+5. Bản máy chủ: tải âm thanh lên lỗi mà vẫn có văn bản thì nguồn văn bản ghi là `device` dù nhận dạng bằng trình duyệt (chỉ sai nhãn).
+
+## 5. Chưa kiểm được ở môi trường này
+
+| Hạng mục | Nên tự thử trên máy thật |
+|---|---|
+| Plugin Android nhận dạng file (`EXTRA_AUDIO_SOURCE`, Android 13+) | Bộ nhận dạng trên máy và ứng dụng Google; file m4a/mp3/amr/ogg dài 1 giờ; tắt màn hình hoặc chuyển app giữa chừng (dịch vụ có thể từ chối khi app ở nền); bấm Hủy; máy không có Google |
+| Plugin iOS (`FileTranscriptionJob`) | Chỉ rà bằng mắt và biên dịch trên CI; thử file dài, có và không có nhận dạng tiếng Việt trên máy, hủy giữa chừng |
+| Bàn phím ảo và thanh địa chỉ thật | E2E chỉ đổi kích thước khung nhìn; thử sửa chữ trong nút sơ đồ trên Android/iPhone |
+| Firefox, Safari | Chỉ có Chromium |
+
+## 6. Commit
+
+`cf7c4a3`, `45c6f8d`, `d2cc53d`, `62d4b6f`, rồi commit "Điện thoại: trang kết quả không còn rộng hơn màn hình..." (lỗi 6, 7, 10) và commit sổ tay kèm báo cáo này. Lỗi 6, 7, 10 nằm trong commit đó.
+
+# Đợt 13/11/2026
+
 Đợt kiểm thử ngày 13/11/2026 trên nhánh `ccr-58431d82-km60c8`, mốc ban đầu là commit `d6aa6a5`.
 Đợt này chạy thành hai lượt vì máy làm việc bị khởi động lại giữa chừng; lượt hai dựng lại bức tranh từ lịch sử git, chạy lại toàn bộ test và rà nốt phần còn hở.
 
