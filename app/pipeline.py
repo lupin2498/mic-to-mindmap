@@ -52,7 +52,8 @@ class Pipeline:
         segments = meeting.get("segments") or []
         duration = meeting.get("duration_sec")
 
-        if audio_path and self.transcriber.available() and (force or not has_transcript or source == "browser"):
+        # văn bản nhận dạng trực tiếp lúc nói ("browser"/"device") chỉ là bản nháp: có Whisper thì nhận dạng lại từ file
+        if audio_path and self.transcriber.available() and (force or not has_transcript or source in ("browser", "device")):
             self.db.update_meeting(meeting_id, status="transcribing", error=None)
             hot_words = self.glossary.hot_words()
             try:
@@ -61,8 +62,8 @@ class Pipeline:
             except Exception as exc:  # noqa: BLE001 - vd: chưa tải được model
                 if not has_transcript:
                     raise RuntimeError(f"Whisper lỗi: {exc}") from exc
-                log.warning("Whisper lỗi, dùng transcript từ trình duyệt: %s", exc)
-                self.db.log_event("warning", f"Whisper lỗi ({str(exc)[:120]}), dùng transcript từ trình duyệt", meeting_id)
+                log.warning("Whisper lỗi, dùng văn bản nhận dạng trực tiếp: %s", exc)
+                self.db.log_event("warning", f"Whisper lỗi ({str(exc)[:120]}), dùng văn bản nhận dạng trực tiếp lúc nói", meeting_id)
                 result = None
             if result and result.text.strip():
                 text, source, segments = nfc(result.text), f"whisper:{self.settings.whisper_model}", result.segments
@@ -75,8 +76,9 @@ class Pipeline:
         elif not has_transcript:
             if audio_path and not self.transcriber.available():
                 raise TranscriberUnavailable(
-                    "Chưa cài faster-whisper để nhận dạng giọng nói offline (pip install faster-whisper), "
-                    "và không có transcript từ trình duyệt."
+                    "Bản ghi này chỉ có âm thanh, chưa có văn bản. Cách không cần AI: ghi lại bằng nút ghi âm và để bật "
+                    "\"Chuyển lời nói thành văn bản ngay khi nói\" (Chrome, Edge, Safari), hoặc dán văn bản vào. "
+                    "Muốn nhận dạng từ file âm thanh thì cài Whisper trên máy chủ: pip install faster-whisper."
                 )
             raise RuntimeError("Cuộc họp chưa có âm thanh hoặc transcript")
 

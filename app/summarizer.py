@@ -214,7 +214,8 @@ class Analyzer:
     def analyze(self, transcript: str, title: str = "", participants: list[str] | None = None,
                 language: str = "vi", context: dict | None = None) -> dict:
         participants = participants or []
-        fallback = analyze_heuristic(transcript, title, participants, language)
+        # bộ máy không cần AI: tự nó đã là kết quả đầy đủ; có LLM thì LLM ghi đè các trường nó trả lời được
+        fallback = analyze_heuristic(transcript, title, participants, language, (context or {}).get("style"))
         if not self.ollama.chat_available():
             fallback["engine"] = "heuristic"
             return fallback

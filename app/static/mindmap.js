@@ -1,4 +1,5 @@
-/* Mind map SVG tương tác: bố cục hai phía, kéo/zoom, chọn, sửa chữ, thu gọn nhánh, xuất SVG/PNG. */
+/* Sơ đồ tư duy SVG tương tác: bố cục hai phía, kéo/zoom (chuột, một ngón, chụm hai ngón), chọn, sửa chữ, thu gọn nhánh,
+   xuất SVG/PNG. options.readOnly = true: chỉ xem (dùng cho bản xem trước lúc đang nói). */
 (function (global) {
   'use strict';
   const NS = 'http://www.w3.org/2000/svg';
@@ -61,6 +62,7 @@
     constructor(container, options) {
       this.container = container;
       this.options = options || {};
+      this.readOnly = !!this.options.readOnly;
       this.tree = null;
       this.scale = 1;
       this.tx = 0;
@@ -103,6 +105,10 @@
     _visibleChildren(node) {
       return node.collapsed ? [] : node.children;
     }
+    _narrow() {
+      // tính theo cửa sổ, không theo khung: trên máy tính khung sơ đồ nằm trong một cột hẹp nhưng vẫn đủ chỗ cho hai phía
+      return window.innerWidth < 600;
+    }
     _subtreeHeight(node) {
       this._size(node);
       const kids = this._visibleChildren(node);
@@ -127,8 +133,11 @@
       root.color = '#4f46e5';
       this.nodes.push(root);
       const sides = { 1: [], '-1': [] };
+      // Màn hình hẹp (điện thoại cầm dọc): dồn mọi nhánh về một phía để nhìn là thấy đủ các nhánh chính,
+      // kéo sang phải để đọc ý con. Chia hai phía thì cả hai bên đều bị cắt.
+      this.oneSided = this._narrow();
       root.children.forEach((child, index) => {
-        child.side = index % 2 === 0 ? 1 : -1;
+        child.side = this.oneSided || index % 2 === 0 ? 1 : -1;
         child.color = PALETTE[index % PALETTE.length];
         sides[child.side].push(child);
       });
@@ -230,6 +239,7 @@
           this.render();
         });
       }
+      if (this.readOnly) return;
       g.addEventListener('click', (e) => {
         e.stopPropagation();
         this.select(node);
@@ -278,9 +288,9 @@
       this.tx = rect.width / 2 - (b.x + b.w / 2) * this.scale;
       this.ty = rect.height / 2 - (b.y + b.h / 2) * this.scale;
       if (this.scale === minScale && scale < minScale) {
-        // bản đồ rộng hơn khung: căn nút gốc vào giữa thay vì căn toàn bộ
+        // bản đồ rộng hơn khung: căn theo nút gốc thay vì căn toàn bộ (một phía thì gốc nằm sát mép trái)
         const root = this.nodes[0];
-        this.tx = rect.width / 2 - (root.x + root.w / 2) * this.scale;
+        this.tx = this.oneSided ? 12 - root.x * this.scale : rect.width / 2 - (root.x + root.w / 2) * this.scale;
         this.ty = rect.height / 2 - (root.y + root.h / 2) * this.scale;
       }
       this._applyTransform();
@@ -322,19 +332,38 @@
         const rect = c.getBoundingClientRect();
         this.zoom(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left, e.clientY - rect.top);
       }, { passive: false });
-      let touch = null;
+      let touch = null, pinch = 0;
+      const spread = (e) => Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
       c.addEventListener('touchstart', (e) => {
-        if (e.touches.length === 1) touch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        if (e.touches.length === 1) { touch = { x: e.touches[0].clientX, y: e.touches[0].clientY }; pinch = 0; }
+        else if (e.touches.length === 2) { touch = null; pinch = spread(e); }
       }, { passive: true });
       c.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 2 && pinch > 0) {
+          // chụm/xòe hai ngón: phóng to thu nhỏ quanh điểm giữa hai ngón
+          e.preventDefault();
+          const rect = c.getBoundingClientRect();
+          const now = spread(e);
+          if (now > 0) {
+            this.zoom(now / pinch, (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left,
+              (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top);
+            pinch = now;
+          }
+          return;
+        }
         if (!touch || e.touches.length !== 1) return;
         e.preventDefault();
         this.tx += e.touches[0].clientX - touch.x; this.ty += e.touches[0].clientY - touch.y;
         touch = { x: e.touches[0].clientX, y: e.touches[0].clientY };
         this._applyTransform();
       }, { passive: false });
-      c.addEventListener('touchend', () => { touch = null; });
-      window.addEventListener('resize', () => { if (this.tree) this.fit(); });
+      c.addEventListener('touchend', (e) => {
+        pinch = 0;
+        // nhấc một trong hai ngón: ngón còn lại tiếp tục kéo từ vị trí hiện tại, không giật về vị trí cũ
+        touch = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null;
+      });
+      // xoay máy/đổi cỡ cửa sổ: bố cục một phía hay hai phía tùy bề rộng nên phải vẽ lại
+      window.addEventListener('resize', () => { if (this.tree) { this.render(); this.fit(); } });
     }
     select(node) {
       if (this.selected === node) return; // không vẽ lại giữa hai lần nhấp của một cú nhấp đúp

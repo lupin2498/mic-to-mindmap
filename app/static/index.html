@@ -13,17 +13,22 @@
       <span class="logo">🎙️</span>
       <div>
         <h1>Mic to Mindmap</h1>
-        <p>Ghi âm cuộc họp → tóm tắt ý chính → mind map, bằng AI chạy local</p>
+        <p>Nói → văn bản → tóm tắt → sơ đồ tư duy, tự động, không cần AI</p>
       </div>
     </div>
-    <div class="server-box" id="server-box" hidden>
-      <input type="url" id="server-url" aria-label="Địa chỉ máy chủ AI" placeholder="Địa chỉ máy chủ, VD: http://192.168.1.10:8000" autocomplete="off">
-      <button class="btn primary small" id="btn-server-save">Kết nối</button>
-    </div>
-    <div class="ai-status" id="ai-status" title="Trạng thái các thành phần AI local">
-      <span class="badge" id="badge-whisper">Whisper: …</span>
-      <span class="badge" id="badge-ollama">LLM: …</span>
-      <span class="badge" id="badge-memory">Trí nhớ: …</span>
+    <details class="server-box" id="server-box" hidden>
+      <summary id="server-summary">⚙ Máy chủ AI (tùy chọn)</summary>
+      <p class="muted small">Ứng dụng tự chạy ngay trên máy này, không cần máy chủ. Nếu bạn có máy tính chạy Whisper/LLM (<code>./run.sh --host 0.0.0.0</code>), nhập địa chỉ của nó để dùng thêm AI. Dữ liệu của hai chế độ được lưu riêng.</p>
+      <div class="server-row">
+        <input type="url" id="server-url" aria-label="Địa chỉ máy chủ AI" placeholder="VD: http://192.168.1.10:8000" autocomplete="off">
+        <button class="btn primary small" id="btn-server-save">Kết nối</button>
+        <button class="btn small" id="btn-server-clear">Dùng độc lập</button>
+      </div>
+    </details>
+    <div class="ai-status" id="ai-status" title="Cách ứng dụng đang nhận dạng giọng nói, tóm tắt và lưu dữ liệu">
+      <span class="badge" id="badge-whisper">Giọng nói: …</span>
+      <span class="badge" id="badge-ollama">Tóm tắt: …</span>
+      <span class="badge" id="badge-memory">Lưu trữ: …</span>
     </div>
   </header>
 
@@ -79,24 +84,37 @@
             <canvas id="level-meter" width="320" height="64"></canvas>
           </div>
 
-          <label class="checkbox">
+          <p class="stt-line" id="stt-line"></p>
+          <label class="checkbox" id="live-captions-row">
             <input type="checkbox" id="live-captions">
-            Phụ đề trực tiếp bằng nhận dạng của trình duyệt
-            <small>(tùy chọn; Chrome/Edge gửi âm thanh tới dịch vụ của trình duyệt, không phải local. Dùng làm dự phòng khi chưa cài Whisper.)</small>
+            <span>Chuyển lời nói thành văn bản ngay khi nói
+              <small>(dùng dịch vụ nhận dạng giọng nói có sẵn của trình duyệt/thiết bị; trên Chrome và Edge âm thanh được gửi tới dịch vụ đó để nhận dạng)</small></span>
           </label>
-          <div class="live-transcript" id="live-transcript" hidden></div>
+          <label class="checkbox">
+            <input type="checkbox" id="auto-process" checked>
+            <span>Tự động tóm tắt và vẽ sơ đồ tư duy khi dừng ghi</span>
+          </label>
+          <div class="live-transcript" id="live-transcript" aria-label="Văn bản đang nhận dạng" hidden></div>
+          <div class="live-preview" id="live-preview" hidden>
+            <h3>Xem trước trong lúc nói <small class="muted">(tự cập nhật)</small></h3>
+            <ul class="live-summary" id="live-summary"></ul>
+            <div class="mindmap-container live" id="live-mindmap"></div>
+          </div>
 
-          <div class="divider"><span>hoặc</span></div>
-          <label class="file-input">
-            📁 Chọn file ghi âm có sẵn (webm, mp3, m4a, wav…)
-            <input type="file" id="audio-file" accept="audio/*,video/webm,video/mp4">
-          </label>
+          <div id="file-row">
+            <div class="divider"><span>hoặc</span></div>
+            <label class="file-input">
+              📁 Chọn file ghi âm có sẵn (webm, mp3, m4a, wav…)
+              <input type="file" id="audio-file" accept="audio/*,video/webm,video/mp4">
+            </label>
+            <small class="muted" id="file-note"></small>
+          </div>
 
           <div class="preview" id="preview" hidden>
             <audio controls id="audio-preview"></audio>
             <div class="preview-actions">
               <span id="preview-info"></span>
-              <button class="btn primary" id="btn-process">✨ Xử lý bằng AI</button>
+              <button class="btn primary" id="btn-process">✨ Tóm tắt &amp; vẽ sơ đồ tư duy</button>
               <button class="btn" id="btn-discard">Bỏ bản ghi</button>
             </div>
           </div>
@@ -107,10 +125,10 @@
         </div>
 
         <div class="card">
-          <h2>Hoặc nhập transcript thủ công</h2>
-          <p class="muted">Dán biên bản/transcript có sẵn để tóm tắt và vẽ mind map ngay.</p>
-          <textarea id="manual-transcript" aria-label="Transcript nhập thủ công" rows="5" placeholder="Dán nội dung cuộc họp vào đây…"></textarea>
-          <button class="btn primary" id="btn-analyze-text">✨ Tóm tắt văn bản này</button>
+          <h2>Hoặc nhập văn bản có sẵn</h2>
+          <p class="muted">Dán biên bản, ghi chú hay bài viết để tóm tắt và vẽ sơ đồ tư duy ngay.</p>
+          <textarea id="manual-transcript" aria-label="Văn bản nhập thủ công" rows="5" placeholder="Dán nội dung vào đây…"></textarea>
+          <button class="btn primary" id="btn-analyze-text">✨ Tóm tắt &amp; vẽ sơ đồ tư duy</button>
         </div>
       </section>
 
@@ -146,7 +164,7 @@
               <h3>Từ khóa</h3>
               <input type="text" id="edit-keywords" aria-label="Từ khóa" placeholder="phân cách bằng dấu phẩy">
               <div class="row-actions">
-                <button class="btn primary" id="btn-save-analysis">💾 Lưu chỉnh sửa (AI sẽ học theo)</button>
+                <button class="btn primary" id="btn-save-analysis">💾 Lưu chỉnh sửa (ứng dụng sẽ học theo)</button>
                 <span class="muted" id="save-analysis-msg"></span>
               </div>
               <div class="rating">
@@ -154,7 +172,7 @@
                 <div class="stars" id="stars">
                   <button data-v="1" aria-label="1 sao">★</button><button data-v="2" aria-label="2 sao">★</button><button data-v="3" aria-label="3 sao">★</button><button data-v="4" aria-label="4 sao">★</button><button data-v="5" aria-label="5 sao">★</button>
                 </div>
-                <input type="text" id="rating-comment" maxlength="1000" aria-label="Góp ý về kết quả" placeholder="Góp ý (tùy chọn, AI sẽ ghi nhớ)">
+                <input type="text" id="rating-comment" maxlength="1000" aria-label="Góp ý về kết quả" placeholder="Góp ý (tùy chọn)">
                 <button class="btn small" id="btn-rate">Gửi</button>
                 <span class="muted" id="rating-msg"></span>
               </div>
@@ -162,7 +180,7 @@
 
             <div class="card mindmap-card">
               <div class="mindmap-toolbar">
-                <h2>Mind map</h2>
+                <h2>Sơ đồ tư duy</h2>
                 <div class="toolbar-buttons">
                   <button class="btn small" id="mm-zoom-in" title="Phóng to" aria-label="Phóng to">＋</button>
                   <button class="btn small" id="mm-zoom-out" title="Thu nhỏ" aria-label="Thu nhỏ">－</button>
@@ -173,17 +191,17 @@
                   <button class="btn small" id="mm-export-png">PNG</button>
                 </div>
               </div>
-              <p class="muted small">Kéo để di chuyển, lăn chuột để phóng to/thu nhỏ, nhấp để chọn, nhấp đúp để sửa chữ, nhấp vòng tròn để thu gọn nhánh.</p>
+              <p class="muted small">Kéo để di chuyển, lăn chuột hoặc chụm hai ngón để phóng to/thu nhỏ, nhấp để chọn, nhấp đúp để sửa chữ, nhấp vòng tròn để thu gọn nhánh.</p>
               <div class="mindmap-container" id="mindmap"></div>
             </div>
           </div>
 
           <div class="card">
-            <h2>Transcript <small class="muted" id="transcript-source"></small></h2>
+            <h2>Văn bản <small class="muted" id="transcript-source"></small></h2>
             <audio controls id="result-audio" hidden></audio>
-            <textarea id="edit-transcript" aria-label="Transcript" rows="10"></textarea>
+            <textarea id="edit-transcript" aria-label="Văn bản của bản ghi" rows="10"></textarea>
             <div class="row-actions">
-              <button class="btn" id="btn-save-transcript">💾 Lưu transcript (học thuật ngữ từ chỗ sửa)</button>
+              <button class="btn" id="btn-save-transcript">💾 Lưu văn bản (học thuật ngữ từ chỗ sửa)</button>
               <button class="btn primary" id="btn-save-transcript-reanalyze">💾 Lưu &amp; phân tích lại</button>
               <span class="muted" id="save-transcript-msg"></span>
             </div>
@@ -194,8 +212,8 @@
       <!-- ============================ HỌC HỎI ============================ -->
       <section class="panel" id="tab-learning">
         <div class="card">
-          <h2>AI local đang thông minh dần</h2>
-          <p class="muted">Mỗi lần bạn sửa tóm tắt, sửa transcript, đánh giá hay thêm thuật ngữ, ứng dụng ghi nhớ và dùng lại cho các cuộc họp sau: thuật ngữ đúng được đưa vào Whisper và LLM, bản tóm tắt bạn đã duyệt trở thành ví dụ mẫu, các cuộc họp trước thành bối cảnh.</p>
+          <h2>Ứng dụng học từ cách bạn dùng</h2>
+          <p class="muted" id="learning-intro">Mỗi lần bạn sửa văn bản, sửa tóm tắt, đánh giá hay thêm thuật ngữ, ứng dụng ghi nhớ và dùng lại cho các lần sau: từ hay bị nhận sai được tự sửa, số ý chính và số nhánh sơ đồ theo đúng cỡ bạn hay giữ.</p>
           <div class="stats" id="stats"></div>
           <div class="ai-setup" id="ai-setup"></div>
           <div class="row-actions">
@@ -208,7 +226,7 @@
         <div class="result-grid">
           <div class="card">
             <h2>Thuật ngữ &amp; tên riêng</h2>
-            <p class="muted small">Từ đúng được gợi ý cho Whisper khi nhận dạng; nếu có "dạng sai", ứng dụng tự sửa trong transcript. Các cặp do AI tự suy ra từ chỉnh sửa của bạn sẽ được áp dụng khi lặp lại đủ số lần.</p>
+            <p class="muted small">Nếu có "dạng hay bị nhận sai", ứng dụng tự sửa thành từ đúng trong văn bản. Các cặp ứng dụng tự suy ra từ chỗ bạn sửa sẽ được áp dụng khi lặp lại đủ số lần.</p>
             <form class="glossary-form" id="glossary-form">
               <input type="text" id="glossary-term" maxlength="120" aria-label="Từ đúng" placeholder="Từ đúng (VD: Nguyễn Minh Quang)" required>
               <input type="text" id="glossary-variant" maxlength="120" aria-label="Dạng hay bị nhận sai" placeholder="Dạng hay bị nhận sai (tùy chọn)">
@@ -221,10 +239,10 @@
           </div>
 
           <div class="card">
-            <h2>Hỏi trí nhớ cuộc họp</h2>
-            <p class="muted small">Tìm trong tất cả cuộc họp đã lưu (LLM local sẽ trả lời nếu có; nếu không, hiển thị các đoạn liên quan nhất).</p>
+            <h2>Tìm lại trong các bản ghi</h2>
+            <p class="muted small">Tìm trong tất cả bản ghi đã lưu: hiển thị các đoạn liên quan nhất (có LLM local thì kèm câu trả lời).</p>
             <form class="ask-form" id="ask-form">
-              <input type="text" id="ask-input" maxlength="1000" aria-label="Câu hỏi cho trí nhớ cuộc họp" placeholder="VD: Tuần trước đã chốt ngân sách bao nhiêu?" required>
+              <input type="text" id="ask-input" maxlength="1000" aria-label="Câu hỏi tìm trong các bản ghi" placeholder="VD: Tuần trước đã chốt ngân sách bao nhiêu?" required>
               <button class="btn primary small" type="submit">Hỏi</button>
             </form>
             <div class="ask-answer" id="ask-answer" hidden></div>
@@ -242,6 +260,10 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
+  <script src="/static/engine-data.js"></script>
+  <script src="/static/engine.js"></script>
+  <script src="/static/speech.js"></script>
+  <script src="/static/local.js"></script>
   <script src="/static/mindmap.js"></script>
   <script src="/static/app.js"></script>
 </body>

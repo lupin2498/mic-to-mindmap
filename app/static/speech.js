@@ -151,7 +151,7 @@
       r.interimResults = true;
       r.lang = opts.lang;
       try { r.maxAlternatives = 1; } catch (_) { /* thuộc tính không bắt buộc */ }
-      r.onstart = () => { setListening(true); };
+      r.onstart = () => { if (rec === r) setListening(true); };   // báo "đã bật" đến muộn sau khi đã tắt thì bỏ qua
       r.onresult = (event) => {
         if (rec !== r) return;
         quickEnds = 0;

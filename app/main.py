@@ -46,6 +46,9 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_DURATION_SEC = 30 * 24 * 3600
 SQLITE_MAX_INT = 2**63 - 1
 
+# nguồn văn bản mà client được tự khai khi gửi văn bản lần đầu
+TRANSCRIPT_SOURCES = {"device", "browser", "manual"}
+
 ALLOWED_AUDIO_EXT = {".webm", ".ogg", ".oga", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".aac", ".wma", ".mkv"}
 
 
@@ -63,6 +66,8 @@ class MeetingCreate(ApiModel):
     title: str = Field(default="", max_length=200)
     participants: list[str] = Field(default_factory=list)
     language: str | None = None
+    # bản ghi chỉ có văn bản nhận dạng trực tiếp (không có file âm thanh) vẫn cần thời lượng để hiển thị
+    duration_sec: float | None = None
 
 
 class MeetingUpdate(ApiModel):
@@ -74,6 +79,8 @@ class MeetingUpdate(ApiModel):
 class TranscriptUpdate(ApiModel):
     transcript: str
     reanalyze: bool = False
+    # nguồn của văn bản khi cuộc họp chưa có: "device" = nhận dạng trực tiếp trên thiết bị lúc nói, mặc định là nhập tay
+    source: str | None = Field(default=None, max_length=20)
 
 
 class AnalysisUpdate(ApiModel):
@@ -166,7 +173,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_meeting(body: MeetingCreate) -> dict:
         title = nfc(body.title).strip() or ("Cuộc họp" if settings.language.startswith("vi") else "Meeting")
         participants = [nfc(p).strip() for p in body.participants if p and p.strip()]
-        return db.create_meeting(title, participants, normalize_language(body.language))
+        meeting = db.create_meeting(title, participants, normalize_language(body.language))
+        if body.duration_sec and math.isfinite(body.duration_sec) and 0 < body.duration_sec < MAX_DURATION_SEC:
+            db.update_meeting(meeting["id"], duration_sec=float(body.duration_sec))
+            meeting = db.get_meeting(meeting["id"])
+        return meeting
 
     @app.get("/api/meetings/{meeting_id}")
     def get_meeting(meeting_id: str) -> dict:
@@ -262,7 +273,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         original = meeting.get("transcript") or ""
         edited = nfc(body.transcript).strip()
         learned = glossary.learn_from_edit(original, edited) if original else []
-        source = meeting.get("transcript_source") or "manual"
+        source = meeting.get("transcript_source") or (body.source if body.source in TRANSCRIPT_SOURCES else "manual")
         if original.strip() and edited != original:
             # chỉ là "chỉnh sửa" khi đã có transcript trước đó và nội dung thật sự đổi
             db.add_feedback(meeting_id, "transcript_edit", original=original, edited=edited)
@@ -348,10 +359,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         answer = analyzer.answer(question, snippets, language)
         if answer is None:
             if snippets:
-                answer = ("Không có LLM local để trả lời; đây là các đoạn liên quan nhất:" if language.startswith("vi")
-                          else "No local LLM available; these are the most relevant excerpts:")
+                answer = ("Các đoạn liên quan nhất trong những bản ghi đã lưu:" if language.startswith("vi")
+                          else "The most relevant excerpts from your saved recordings:")
             else:
-                answer = "Chưa có trí nhớ nào liên quan." if language.startswith("vi") else "No related memory yet."
+                answer = "Chưa có bản ghi nào liên quan." if language.startswith("vi") else "No related recording yet."
         return {"answer": answer, "sources": snippets, "engine": analyzer.engine_name()}
 
     @app.post("/api/learning/reindex")

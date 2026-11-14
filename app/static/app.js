@@ -1,26 +1,32 @@
-/* Logic ứng dụng Mic to Mindmap (không phụ thuộc thư viện ngoài). */
+/* Logic ứng dụng Mic to Mindmap (không phụ thuộc thư viện ngoài).
+
+   Hai cách chạy, cùng một giao diện:
+   - ĐỘC LẬP (bản đóng gói cho điện thoại, chưa nhập địa chỉ máy chủ): mọi thứ nằm trên máy này. Lời nói được chuyển
+     thành văn bản ngay khi nói (speech.js), tóm tắt và sơ đồ tư duy do engine.js làm, dữ liệu lưu bằng local.js.
+   - MÁY CHỦ (mở từ ./run.sh hoặc nhập địa chỉ máy chủ): gọi API; máy chủ có Whisper/LLM thì dùng, không có thì cũng
+     tóm tắt bằng đúng thuật toán không cần AI đó. */
 (function () {
   'use strict';
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+  const engine = window.M2MEngine;
+  const speech = window.M2MSpeech;
+  const local = window.M2MLocal;
 
   // ------------------------------------------------------------------ API
-  // Bản di động (Capacitor) gọi tới máy chủ AI trong mạng LAN; bản web dùng cùng origin.
-  const IS_MOBILE = !!window.M2M_MOBILE;
+  const IS_MOBILE = !!window.M2M_MOBILE;     // bản đóng gói: chạy độc lập được, máy chủ AI là tùy chọn
   let API_BASE = '';
   try { API_BASE = IS_MOBILE ? (localStorage.getItem('m2m.server') || '') : ''; } catch (_) { API_BASE = ''; }
   API_BASE = API_BASE.replace(/\/+$/, '');
+  const LOCAL = IS_MOBILE && !API_BASE;      // chế độ độc lập: không gọi mạng
   function apiUrl(path) { return path.startsWith('/') ? API_BASE + path : path; }
 
   async function request(method, url, body, isForm) {
+    if (LOCAL) return local.request(method, url, body, isForm);
     const options = { method, headers: {} };
     if (body !== undefined) {
       if (isForm) options.body = body;
       else { options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
-    }
-    if (IS_MOBILE && !API_BASE) {
-      // Chưa có địa chỉ máy chủ: không gửi request tới chính origin của app (chỉ nhận về 404 khó hiểu)
-      throw new Error('Chưa nhập địa chỉ máy chủ AI. Nhập ở ô phía trên rồi nhấn Kết nối.');
     }
     let resp;
     try {
@@ -52,9 +58,11 @@
   };
 
   // ---------------------------------------------------------------- state
+  /* capture: bản ghi vừa dừng (hoặc file vừa chọn) chưa xử lý xong: {blob, ext, duration, text}.
+     live: văn bản đang nhận dạng trong lúc nói: các câu đã chốt + phần đang nói dở. */
   const state = {
-    meetings: [], current: null, health: null, blob: null, blobExt: 'webm', duration: 0,
-    liveTranscript: '', rating: 0, mindmap: null,
+    meetings: [], current: null, health: null, capture: null, rating: 0, mindmap: null, liveMap: null,
+    live: { finals: [], interim: '' }, audioUrl: '',
   };
 
   // ---------------------------------------------------------------- utils
@@ -65,7 +73,7 @@
     node.classList.toggle('error', !!isError);
     node.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { node.hidden = true; }, isError ? 6000 : 3200);
+    toastTimer = setTimeout(() => { node.hidden = true; }, isError ? 7000 : 3200);
   }
   // Mọi dữ liệu từ máy chủ (tên model, góp ý, ngày giờ...) phải qua esc() trước khi ghép vào innerHTML
   function esc(value) {
@@ -94,13 +102,33 @@
   }
   function statusLabel(status) {
     return ({ new: 'Mới', recorded: 'Đã ghi âm', queued: 'Đang chờ', transcribing: 'Đang nhận dạng giọng nói',
-      transcribed: 'Đã có transcript', analyzing: 'Đang tóm tắt & vẽ mind map', done: 'Hoàn tất', error: 'Lỗi' })[status] || status;
+      transcribed: 'Đã có văn bản', analyzing: 'Đang tóm tắt & vẽ sơ đồ tư duy', done: 'Hoàn tất', error: 'Lỗi' })[status] || status;
   }
   function statusClass(status) {
     if (status === 'done') return 'done';
     if (status === 'error') return 'error';
     if (['queued', 'transcribing', 'analyzing'].includes(status)) return 'working';
     return '';
+  }
+  /* Tên dễ hiểu của cách tóm tắt ("heuristic" -> thuật toán không cần AI, "ollama:qwen2.5:7b" -> AI qwen2.5:7b). */
+  function engineLabel(name) {
+    if (!name) return '';
+    if (name.indexOf('ollama:') === 0) return `AI ${name.slice(7)}`;
+    if (name.indexOf('heuristic') === 0) return name.length > 9 ? `thuật toán không cần AI${name.slice(9)}` : 'thuật toán không cần AI';
+    return name;
+  }
+  function sourceLabel(source) {
+    if (!source) return '';
+    const edited = /\+edited$/.test(source);
+    const base = source.replace(/\+edited$/, '');
+    let label = base;
+    if (base === 'browser' || base === 'device') label = 'nhận dạng trực tiếp khi nói';
+    else if (base === 'manual') label = 'nhập tay';
+    else if (base.indexOf('whisper:') === 0) label = `Whisper ${base.slice(8)}`;
+    return label + (edited ? ', đã sửa' : '');
+  }
+  function wordCount(text) {
+    return text ? text.split(/\s+/).filter(Boolean).length : 0;
   }
 
   // ----------------------------------------------------------------- tabs
@@ -109,44 +137,109 @@
     $$('.panel').forEach((p) => p.classList.toggle('active', p.id === `tab-${name}`));
     if (name === 'learning') loadLearning();
     if (name === 'result' && state.mindmap && state.current) state.mindmap.fit();
+    if (name === 'record' && state.liveMap && !$('#live-preview').hidden) state.liveMap.fit();
   }
   $$('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.dataset.tab)));
 
+  // ------------------------------------------- cách chuyển lời nói thành văn bản
+  let captionsTouched = false;
+  function sttSupport() {
+    return speech ? speech.support() : { provider: null, recordAudio: true, label: '' };
+  }
+  function whisperReady() {
+    return !LOCAL && !!(state.health && state.health.whisper && state.health.whisper.available);
+  }
+  /* Bản ghi sắp tới sẽ: live = chuyển thành văn bản ngay khi nói; audio = ghi kèm file âm thanh. */
+  function capturePlan() {
+    const support = sttSupport();
+    const wantLive = $('#live-captions').checked;
+    // Whisper trên máy chủ nhận dạng từ file âm thanh; nhận dạng trực tiếp lúc đó chỉ là phụ đề xem thêm
+    if (whisperReady()) return { audio: true, live: wantLive && !!support.provider && support.recordAudio };
+    const live = !!support.provider && (LOCAL || wantLive);
+    // điện thoại chỉ cho một bên dùng micro: đã nhận dạng trực tiếp thì không ghi kèm file âm thanh
+    return { audio: support.recordAudio || !live, live };
+  }
+  function renderSttLine() {
+    const support = sttSupport();
+    const plan = capturePlan();
+    const line = $('#stt-line');
+    let text, cls;
+    if (whisperReady()) {
+      text = `Âm thanh sẽ được Whisper (${state.health.whisper.model}) trên máy chủ chuyển thành văn bản sau khi bạn dừng ghi.`;
+      cls = 'ok';
+    } else if (plan.live) {
+      text = `🎙 Lời nói được chuyển thành văn bản ngay khi bạn nói, bằng nhận dạng giọng nói có sẵn của ${support.label}.`
+        + (plan.audio ? '' : ' Trên điện thoại ứng dụng không lưu kèm file âm thanh.');
+      cls = 'ok';
+    } else if (!support.provider) {
+      text = 'Trình duyệt/thiết bị này không có nhận dạng giọng nói nên bản ghi chỉ nghe lại được. Hãy mở bằng Chrome, Edge hoặc Safari, hoặc dán văn bản vào ô bên dưới.';
+      cls = 'warn';
+    } else {
+      text = 'Đang tắt chuyển lời nói thành văn bản: bản ghi sẽ chỉ có âm thanh, không tóm tắt được.';
+      cls = 'warn';
+    }
+    line.textContent = text;
+    line.className = `stt-line ${cls}`;
+    // chế độ độc lập luôn nhận dạng trực tiếp (không còn cách nào khác); máy không có nhận dạng thì ô chọn vô nghĩa
+    $('#live-captions-row').hidden = LOCAL || !support.provider;
+    $('#file-row').hidden = LOCAL;
+    $('#file-note').textContent = !LOCAL && state.health && !whisperReady()
+      ? 'Máy chủ chưa cài Whisper nên file ghi âm có sẵn chỉ lưu lại để nghe, không tự chuyển thành văn bản được.' : '';
+  }
+  $('#live-captions').addEventListener('change', () => { captionsTouched = true; renderSttLine(); });
+  try { $('#auto-process').checked = localStorage.getItem('m2m.auto') !== '0'; } catch (_) { /* giữ mặc định */ }
+  $('#auto-process').addEventListener('change', () => {
+    try { localStorage.setItem('m2m.auto', $('#auto-process').checked ? '1' : '0'); } catch (_) { /* không lưu được cũng không sao */ }
+  });
+
   // --------------------------------------------------------------- health
+  function setBadge(id, ok, text) {
+    const node = $(id);
+    node.className = `badge ${ok ? 'ok' : 'off'}`;
+    node.textContent = text;
+  }
   async function loadHealth() {
+    const support = sttSupport();
     try {
       const h = await api.get('/api/health');
       state.health = h;
-      const w = $('#badge-whisper'), o = $('#badge-ollama'), m = $('#badge-memory');
-      w.className = `badge ${h.whisper.available ? 'ok' : 'off'}`;
-      w.textContent = h.whisper.available ? `Whisper: ${h.whisper.model}` : 'Whisper: chưa cài';
-      if (h.ollama.available && h.ollama.model_ready) {
-        o.className = 'badge ok'; o.textContent = `LLM: ${h.ollama.model}`;
-      } else if (h.ollama.available) {
-        o.className = 'badge off'; o.textContent = `LLM: thiếu model ${h.ollama.model}`;
-      } else {
-        o.className = 'badge off'; o.textContent = 'LLM: heuristic (chưa có Ollama)';
-      }
-      m.className = 'badge ok'; m.textContent = `Trí nhớ: ${h.embedder}`;
+      if (h.whisper.available) setBadge('#badge-whisper', true, `Whisper: ${h.whisper.model}`);
+      else if (support.provider) setBadge('#badge-whisper', true, 'Giọng nói: nhận dạng trực tiếp');
+      else setBadge('#badge-whisper', false, 'Giọng nói: máy không hỗ trợ');
+      if (h.ollama.available && h.ollama.model_ready) setBadge('#badge-ollama', true, `LLM: ${h.ollama.model}`);
+      else if (h.ollama.available) setBadge('#badge-ollama', false, `LLM: thiếu model ${h.ollama.model}`);
+      else setBadge('#badge-ollama', true, 'Tóm tắt: không cần AI');
+      if (h.standalone) setBadge('#badge-memory', h.storage !== 'memory', h.storage !== 'memory' ? 'Lưu trên máy này' : 'Lưu tạm (trình duyệt chặn bộ nhớ)');
+      else setBadge('#badge-memory', true, `Trí nhớ: ${h.embedder}`);
+      if (IS_MOBILE) $('#server-box').classList.remove('warn');
     } catch (err) {
       state.health = null;
-      $('#badge-whisper').className = 'badge off'; $('#badge-whisper').textContent = 'Whisper: ?';
-      $('#badge-ollama').className = 'badge off'; $('#badge-ollama').textContent = IS_MOBILE ? 'Chưa kết nối máy chủ' : 'Không kết nối được server';
-      $('#badge-memory').className = 'badge off'; $('#badge-memory').textContent = 'Trí nhớ: ?';
-      if (IS_MOBILE) $('#server-box').classList.add('warn');
+      setBadge('#badge-whisper', false, 'Giọng nói: ?');
+      setBadge('#badge-ollama', false, IS_MOBILE ? 'Chưa kết nối máy chủ' : 'Không kết nối được server');
+      setBadge('#badge-memory', false, 'Lưu trữ: ?');
+      if (IS_MOBILE) { $('#server-box').classList.add('warn'); $('#server-box').open = true; }
     }
+    // chưa có Whisper thì mặc định chuyển lời nói thành văn bản ngay khi nói (người dùng tự đổi thì giữ lựa chọn của họ)
+    if (!captionsTouched) $('#live-captions').checked = !whisperReady();
+    renderSttLine();
   }
   function setupServerBox() {
     const box = $('#server-box');
     if (!IS_MOBILE) return;
     box.hidden = false;
     $('#server-url').value = API_BASE;
+    $('#server-summary').textContent = API_BASE ? `⚙ Máy chủ AI: ${API_BASE}` : '⚙ Máy chủ AI (tùy chọn): đang chạy độc lập';
+    $('#btn-server-clear').hidden = !API_BASE;
+    const save = (value) => {
+      try { if (value) localStorage.setItem('m2m.server', value); else localStorage.removeItem('m2m.server'); } catch (_) { /* bộ nhớ bị chặn */ }
+      location.reload();
+    };
     $('#btn-server-save').addEventListener('click', () => {
       let value = $('#server-url').value.trim().replace(/\/+$/, '');
       if (value && !/^https?:\/\//i.test(value)) value = `http://${value}`;
-      try { localStorage.setItem('m2m.server', value); } catch (_) {}
-      location.reload();
+      save(value);
     });
+    $('#btn-server-clear').addEventListener('click', () => save(''));
   }
 
   // ------------------------------------------------------------- meetings
@@ -197,7 +290,7 @@
   $('#btn-new-meeting').addEventListener('click', () => {
     state.current = null;
     openSeq += 1; // hủy lần mở cuộc họp còn đang chờ trả lời
-    if (rec.recorder) cancelRecording();
+    if (isRecording()) stopRecording({ discard: true });
     discardRecording();
     $('#meeting-title').value = '';
     $('#meeting-participants').value = '';
@@ -206,15 +299,77 @@
     $('#meeting-title').focus();
   });
 
+  // ------------------------------------------------- văn bản trực tiếp khi nói
+  function liveText() {
+    return state.live.finals.join(' ');
+  }
+  function renderLive() {
+    const box = $('#live-transcript');
+    box.innerHTML = '';
+    box.append(document.createTextNode(liveText() + (state.live.finals.length ? ' ' : '')));
+    const span = document.createElement('span');
+    span.className = 'interim';
+    span.textContent = state.live.interim;
+    box.appendChild(span);
+    box.scrollTop = box.scrollHeight;
+  }
+  let liveTimer = null;
+  let liveShown = '';
+  /* Tóm tắt và vẽ sơ đồ tư duy ngay trong lúc nói (bằng engine.js, không gọi máy chủ). */
+  function runLiveAnalysis() {
+    liveTimer = null;
+    if (!engine) return;
+    const text = liveText();
+    if (text === liveShown) return;
+    liveShown = text;
+    const preview = $('#live-preview');
+    if (wordCount(text) < 12) { preview.hidden = true; return; }
+    let analysis;
+    try {
+      analysis = engine.analyze(text, {
+        title: $('#meeting-title').value.trim(), participants: participantList(), language: $('#meeting-language').value || 'auto',
+      });
+    } catch (err) { return; }
+    const list = $('#live-summary');
+    list.innerHTML = '';
+    for (const item of analysis.summary.slice(0, 5)) {
+      const li = document.createElement('li');
+      li.textContent = item;
+      list.appendChild(li);
+    }
+    const wasHidden = preview.hidden;
+    preview.hidden = false;
+    state.liveMap.setTree(analysis.mindmap);
+    if (wasHidden) state.liveMap.fit();
+  }
+  function scheduleLiveAnalysis() {
+    if (liveTimer) return;
+    // văn bản càng dài càng thưa nhịp cập nhật để không tốn pin
+    liveTimer = setTimeout(runLiveAnalysis, Math.min(8000, 900 + wordCount(liveText()) * 2));
+  }
+  function resetLive() {
+    clearTimeout(liveTimer);
+    liveTimer = null;
+    liveShown = '';
+    state.live = { finals: [], interim: '' };
+    $('#live-transcript').hidden = true;
+    $('#live-transcript').textContent = '';
+    $('#live-preview').hidden = true;
+    $('#live-summary').innerHTML = '';
+  }
+
   // ------------------------------------------------------------ recording
   const rec = { recorder: null, stream: null, chunks: [], ctx: null, analyser: null, raf: null, timer: null,
-    startedAt: 0, accumulated: 0, paused: false, recognition: null, mime: '', discard: false, starting: false };
+    startedAt: 0, accumulated: 0, paused: false, mime: '', starting: false, active: false, stopping: null,
+    speech: null, live: false, level: 0, levels: [] };
+  function isRecording() {
+    return rec.active;
+  }
   function setRecordLabel(recording) {
     const label = recording ? 'Dừng ghi âm' : 'Bắt đầu ghi âm';
     $('#btn-record').title = label;
     $('#btn-record').setAttribute('aria-label', label);
   }
-
   function pickMime() {
     const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus', 'audio/ogg'];
     if (!window.MediaRecorder) return '';
@@ -234,174 +389,297 @@
   function drawMeter() {
     const canvas = $('#level-meter');
     const ctx2d = canvas.getContext('2d');
-    const data = new Uint8Array(rec.analyser.frequencyBinCount);
-    const draw = () => {
+    const bars = 48;
+    const data = rec.analyser ? new Uint8Array(rec.analyser.frequencyBinCount) : null;
+    rec.levels = [];
+    let lastSample = 0;
+    const draw = (now) => {
       rec.raf = requestAnimationFrame(draw);
-      rec.analyser.getByteFrequencyData(data);
       ctx2d.clearRect(0, 0, canvas.width, canvas.height);
-      const bars = 48, step = Math.floor(data.length / bars);
+      let values;
+      if (data) {
+        rec.analyser.getByteFrequencyData(data);
+        const step = Math.floor(data.length / bars);
+        values = [];
+        for (let i = 0; i < bars; i++) values.push(data[i * step] / 255);
+      } else {
+        // không có luồng âm thanh riêng (điện thoại nhận dạng trực tiếp): vẽ mức âm gần đây do bộ nhận dạng báo về
+        if (now - lastSample > 80) {
+          lastSample = now;
+          rec.levels.push(rec.paused ? 0 : rec.level);
+          if (rec.levels.length > bars) rec.levels.shift();
+          rec.level *= 0.8;
+        }
+        values = new Array(bars - rec.levels.length).fill(0).concat(rec.levels);
+      }
       for (let i = 0; i < bars; i++) {
-        const v = data[i * step] / 255;
+        const v = values[i] || 0;
         const h = Math.max(2, v * canvas.height);
         ctx2d.fillStyle = rec.paused ? '#d1d5db' : `hsl(${240 - v * 120}, 70%, 55%)`;
         ctx2d.fillRect(i * (canvas.width / bars) + 1, canvas.height - h, canvas.width / bars - 2, h);
       }
     };
-    draw();
+    rec.raf = requestAnimationFrame(draw);
   }
-  function startRecognition() {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { toast('Trình duyệt này không hỗ trợ phụ đề trực tiếp', true); return; }
-    const box = $('#live-transcript');
-    box.hidden = false;
-    const recognition = new SR();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = $('#meeting-language').value === 'en' ? 'en-US' : 'vi-VN';
-    recognition.onresult = (event) => {
-      let interim = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const r = event.results[i];
-        if (r.isFinal) state.liveTranscript += `${r[0].transcript.trim()}. `;
-        else interim += r[0].transcript;
-      }
-      box.innerHTML = '';
-      box.append(document.createTextNode(state.liveTranscript));
-      const span = document.createElement('span'); span.className = 'interim'; span.textContent = interim;
-      box.appendChild(span);
-      box.scrollTop = box.scrollHeight;
-    };
-    recognition.onend = () => { if (rec.recorder && rec.recorder.state === 'recording') { try { recognition.start(); } catch (_) {} } };
-    recognition.onerror = () => {};
-    try { recognition.start(); } catch (_) {}
-    rec.recognition = recognition;
+  function releaseAudio() {
+    if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
+    if (rec.ctx) { rec.ctx.close().catch(() => {}); }
+    rec.stream = null; rec.ctx = null; rec.analyser = null; rec.recorder = null; rec.chunks = [];
   }
-  function stopRecognition() {
-    if (rec.recognition) { const r = rec.recognition; rec.recognition = null; try { r.onend = null; r.stop(); } catch (_) {} }
-  }
-  async function startRecording() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      toast('Trình duyệt không hỗ trợ ghi âm (cần HTTPS hoặc localhost)', true); return;
-    }
-    // Bấm lặp khi hộp thoại xin quyền chưa trả lời: không mở luồng micro thứ hai (luồng đầu sẽ không bao giờ tắt)
-    if (rec.starting || rec.recorder) return;
-    rec.starting = true;
+  /* Mở micro và bộ ghi file âm thanh. Trả về false (kèm thông báo lỗi) nếu không ghi được. */
+  async function openAudio() {
     try {
       rec.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
-    } catch (err) { toast(`Không truy cập được micro: ${err.message}`, true); return; } finally { rec.starting = false; }
+    } catch (err) {
+      rec.stream = null;
+      return `Không truy cập được micro: ${err.message}`;
+    }
     rec.mime = pickMime();
     rec.chunks = [];
     try {
       rec.recorder = new MediaRecorder(rec.stream, rec.mime ? { mimeType: rec.mime } : undefined);
     } catch (err) {
-      rec.stream.getTracks().forEach((t) => t.stop());
-      toast(`Trình duyệt không ghi âm được: ${err.message}`, true); return;
+      releaseAudio();
+      return `Trình duyệt không ghi âm được: ${err.message}`;
     }
     // Micro bị rút/thu hồi/app khác chiếm giữa chừng: dừng và giữ phần đã ghi, đừng để đồng hồ chạy tiếp trên bản ghi câm
     const activeRecorder = rec.recorder;
     rec.stream.getAudioTracks().forEach((track) => track.addEventListener('ended', () => {
-      if (rec.recorder !== activeRecorder || activeRecorder.state === 'inactive') return;
+      if (rec.recorder !== activeRecorder || !rec.active) return;
       const at = fmtTime(elapsed());
-      stopRecording();
-      $('#rec-state').textContent = `Micro bị ngắt lúc ${at}. Phần đã ghi được giữ lại bên dưới.`;
+      stopRecording({ auto: false, note: `Micro bị ngắt lúc ${at}. Phần đã ghi được giữ lại bên dưới.` });
       toast(`Micro bị ngắt lúc ${at}, bản ghi đã dừng. Phần đã ghi vẫn được giữ.`, true);
     }));
     rec.recorder.ondataavailable = (e) => { if (e.data && e.data.size) rec.chunks.push(e.data); };
-    rec.recorder.onstop = finishRecording;
     rec.recorder.start(1000);
-    rec.accumulated = 0; rec.startedAt = Date.now(); rec.paused = false;
-    state.liveTranscript = '';
     rec.ctx = new (window.AudioContext || window.webkitAudioContext)();
     rec.analyser = rec.ctx.createAnalyser();
     rec.analyser.fftSize = 256;
     rec.ctx.createMediaStreamSource(rec.stream).connect(rec.analyser);
-    drawMeter();
-    rec.timer = setInterval(() => { $('#rec-timer').textContent = fmtTime(elapsed()); }, 250);
-    if ($('#live-captions').checked) startRecognition();
-    $('#btn-record').classList.add('recording');
-    setRecordLabel(true);
-    $('#btn-pause').disabled = false; $('#btn-stop').disabled = false;
-    $('#rec-state').textContent = 'Đang ghi âm…';
-    $('#preview').hidden = true;
+    return '';
+  }
+  /* Bật nhận dạng giọng nói trực tiếp. Ném lỗi nếu máy không cho (thiếu quyền, không có dịch vụ). */
+  function openSpeech() {
+    const session = speech.create({
+      lang: speech.langTag($('#meeting-language').value),
+      onPartial: (text) => {
+        if (rec.speech !== session) return;
+        state.live.interim = text;
+        if (text) rec.level = Math.max(rec.level, 0.55);
+        renderLive();
+      },
+      onFinal: (text) => {
+        if (rec.speech !== session) return;
+        const sentence = speech.formatUtterance(text);
+        if (!sentence) return;
+        state.live.finals.push(sentence);
+        state.live.interim = '';
+        renderLive();
+        scheduleLiveAnalysis();
+      },
+      onLevel: (value) => { if (rec.speech === session) rec.level = value; },
+      onState: (info) => {
+        if (rec.speech !== session || !rec.active || rec.paused) return;
+        if (info.listening) $('#rec-state').textContent = recordingLabel();
+        else if (info.reason === 'background') $('#rec-state').textContent = 'Tạm ngừng nhận dạng vì ứng dụng không ở phía trước. Quay lại ứng dụng để tiếp tục.';
+      },
+      onError: (error) => {
+        if (rec.speech !== session || !rec.active) return;
+        if (!error.fatal) { $('#rec-state').textContent = error.message; return; }
+        rec.live = false;
+        if (rec.recorder) {
+          // vẫn còn bản ghi âm chạy song song: giữ bản ghi, chỉ báo là hết chuyển thành văn bản
+          $('#rec-state').textContent = 'Đang ghi âm (đã ngừng chuyển thành văn bản)…';
+          toast(`${error.message} Bản ghi âm vẫn tiếp tục.`, true);
+        } else {
+          const at = fmtTime(elapsed());
+          stopRecording({ auto: false, note: `Nhận dạng giọng nói dừng lúc ${at}. Phần văn bản đã có được giữ lại.` });
+          toast(error.message, true);
+        }
+      },
+    });
+    rec.speech = session;
+    return session.start().catch((err) => {
+      if (rec.speech === session) rec.speech = null;
+      throw err;
+    });
+  }
+  function recordingLabel() {
+    return rec.live ? 'Đang ghi và chuyển thành văn bản…' : 'Đang ghi âm…';
+  }
+  async function startRecording() {
+    // Bấm lặp khi hộp thoại xin quyền chưa trả lời: không mở luồng micro thứ hai (luồng đầu sẽ không bao giờ tắt)
+    if (rec.starting || rec.active || rec.stopping) return;
+    const plan = capturePlan();
+    const canCapture = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    if (plan.audio && !canCapture) {
+      if (!plan.live) { toast('Trình duyệt không hỗ trợ ghi âm (cần HTTPS hoặc localhost)', true); return; }
+      plan.audio = false; // không ghi được file âm thanh nhưng vẫn chuyển lời nói thành văn bản được
+    }
+    rec.starting = true;
+    try {
+      if (plan.audio) {
+        const problem = await openAudio();
+        if (problem) {
+          if (!plan.live) { toast(problem, true); return; }
+          plan.audio = false;
+        }
+      }
+      state.capture = null;
+      resetLive();
+      rec.live = false;
+      if (plan.live) {
+        try {
+          await openSpeech();
+          rec.live = true;
+        } catch (err) {
+          if (!plan.audio) { toast(err.message, true); return; }
+          toast(`${err.message} Vẫn ghi âm bình thường.`, true);
+        }
+      }
+      rec.active = true;
+      rec.accumulated = 0; rec.startedAt = Date.now(); rec.paused = false; rec.level = 0;
+      drawMeter();
+      rec.timer = setInterval(() => { $('#rec-timer').textContent = fmtTime(elapsed()); }, 250);
+      if (speech) speech.keepAwake(true);
+      $('#btn-record').classList.add('recording');
+      setRecordLabel(true);
+      $('#btn-pause').disabled = false; $('#btn-stop').disabled = false;
+      $('#rec-state').textContent = recordingLabel();
+      $('#preview').hidden = true;
+      if (rec.live) { $('#live-transcript').hidden = false; renderLive(); }
+    } finally {
+      rec.starting = false;
+    }
   }
   function togglePause() {
-    if (!rec.recorder) return;
-    if (rec.recorder.state === 'recording') {
-      stopRecognition();
-      rec.recorder.pause(); rec.accumulated = elapsed(); rec.paused = true; rec.startedAt = 0;
+    if (!rec.active) return;
+    if (!rec.paused) {
+      rec.accumulated = elapsed(); rec.paused = true; rec.startedAt = 0;
+      if (rec.recorder && rec.recorder.state === 'recording') rec.recorder.pause();
+      if (rec.speech) rec.speech.pause().catch(() => {});
       $('#btn-pause').textContent = '▶ Tiếp tục'; $('#rec-state').textContent = 'Tạm dừng';
       $('#btn-record').classList.add('paused');
-    } else if (rec.recorder.state === 'paused') {
-      rec.recorder.resume(); rec.paused = false; rec.startedAt = Date.now();
-      if ($('#live-captions').checked) startRecognition();
-      $('#btn-pause').textContent = '⏸ Tạm dừng'; $('#rec-state').textContent = 'Đang ghi âm…';
+    } else {
+      rec.paused = false; rec.startedAt = Date.now();
+      if (rec.recorder && rec.recorder.state === 'paused') rec.recorder.resume();
+      if (rec.speech && rec.live) rec.speech.resume().catch((err) => toast(err.message, true));
+      $('#btn-pause').textContent = '⏸ Tạm dừng'; $('#rec-state').textContent = recordingLabel();
       $('#btn-record').classList.remove('paused');
     }
   }
-  function stopRecording() {
-    if (!rec.recorder) return;
-    state.duration = elapsed();
-    stopRecognition();
-    if (rec.recorder.state !== 'inactive') rec.recorder.stop();
-    rec.stream.getTracks().forEach((t) => t.stop());
+  /* Dừng ghi. options: {discard: bỏ luôn bản ghi, auto: false = không tự xử lý, note: câu hiện ở dòng trạng thái}. */
+  function stopRecording(options) {
+    if (!rec.active) return rec.stopping || Promise.resolve();
+    const opts = options || {};
+    rec.active = false;
+    const duration = elapsed();
+    const session = rec.speech, recorder = rec.recorder, mime = rec.mime;
     cancelAnimationFrame(rec.raf); clearInterval(rec.timer);
-    if (rec.ctx) { rec.ctx.close().catch(() => {}); rec.ctx = null; }
+    if (speech) speech.keepAwake(false);
     $('#btn-record').classList.remove('recording', 'paused');
     setRecordLabel(false);
     $('#btn-pause').disabled = true; $('#btn-stop').disabled = true; $('#btn-pause').textContent = '⏸ Tạm dừng';
-    $('#rec-state').textContent = 'Đã dừng. Nghe lại bên dưới rồi nhấn "Xử lý bằng AI".';
+    $('#rec-state').textContent = opts.note || 'Đã dừng.';
+    // chờ cả hai phía trả nốt phần cuối: file âm thanh và câu đang nói dở
+    const audioDone = recorder ? new Promise((resolve) => {
+      const finish = () => resolve(new Blob(rec.chunks, { type: mime || 'audio/webm' }));
+      recorder.onstop = finish;
+      if (recorder.state !== 'inactive') recorder.stop(); else finish();
+    }) : Promise.resolve(null);
+    const speechDone = session ? session.stop().catch(() => {}) : Promise.resolve();
+    if (rec.stream) rec.stream.getTracks().forEach((t) => t.stop());
+    if (rec.ctx) { rec.ctx.close().catch(() => {}); rec.ctx = null; }
+    rec.stopping = Promise.all([audioDone, speechDone]).then((done) => {
+      rec.stopping = null;
+      rec.recorder = null; rec.stream = null; rec.analyser = null; rec.chunks = []; rec.speech = null; rec.live = false;
+      if (opts.discard) { resetLive(); return; }
+      finishRecording(done[0], duration, opts, !!session);
+    });
+    return rec.stopping;
   }
-  function cancelRecording() {
-    rec.discard = true;
-    stopRecording();
+  function finishRecording(blob, duration, opts, listened) {
+    const text = liveText().trim();
+    state.live.interim = '';
+    if (blob && !blob.size) blob = null;
+    if (!blob && !text) {
+      // không có file âm thanh lẫn văn bản: không có gì để giữ
+      const message = listened ? 'Không nhận dạng được lời nói nào. Hãy thử lại và nói gần micro hơn.' : 'Bản ghi trống';
+      if (!opts.note) $('#rec-state').textContent = message;
+      toast(message, true);
+      resetLive();
+      return;
+    }
+    setCapture({ blob, ext: blob ? extForMime(blob.type) : '', duration, text });
+    const canProcess = !!text || whisperReady();
+    if (opts.auto !== false && $('#auto-process').checked && canProcess) {
+      $('#rec-state').textContent = 'Đã dừng. Đang tóm tắt và vẽ sơ đồ tư duy…';
+      processRecording();
+    } else if (!opts.note) {
+      $('#rec-state').textContent = canProcess
+        ? 'Đã dừng. Nhấn "Tóm tắt & vẽ sơ đồ tư duy" để xử lý.'
+        : 'Đã dừng. Bản ghi chỉ có âm thanh, chưa có văn bản để tóm tắt.';
+    }
   }
-  function finishRecording() {
-    const blob = new Blob(rec.chunks, { type: rec.mime || 'audio/webm' });
-    rec.recorder = null;
-    if (rec.discard) { rec.discard = false; rec.chunks = []; return; }
-    if (!blob.size) { toast('Bản ghi trống', true); return; }
-    setBlob(blob, extForMime(blob.type), state.duration);
-  }
-  function setBlob(blob, ext, duration) {
-    state.blob = blob; state.blobExt = ext; state.duration = duration || 0;
+  function setCapture(capture) {
+    state.capture = capture;
     const audio = $('#audio-preview');
-    audio.src = URL.createObjectURL(blob);
+    if (capture.blob) {
+      audio.hidden = false;
+      audio.src = URL.createObjectURL(capture.blob);
+      audio.onloadedmetadata = () => {
+        if (state.capture === capture && isFinite(audio.duration) && audio.duration > 0) capture.duration = audio.duration;
+      };
+    } else {
+      audio.hidden = true;
+      audio.removeAttribute('src');
+    }
+    const info = [];
+    if (capture.blob) info.push(`${(capture.blob.size / 1024 / 1024).toFixed(2)} MB`);
+    if (capture.duration) info.push(fmtTime(capture.duration));
+    if (capture.text) info.push(`${wordCount(capture.text)} từ đã nhận dạng`);
+    $('#preview-info').textContent = info.join(' · ');
     $('#preview').hidden = false;
-    $('#preview-info').textContent = `${(blob.size / 1024 / 1024).toFixed(2)} MB${duration ? ` · ${fmtTime(duration)}` : ''}`;
-    audio.onloadedmetadata = () => { if (isFinite(audio.duration) && audio.duration > 0) state.duration = audio.duration; };
   }
   function discardRecording() {
-    state.blob = null; state.liveTranscript = ''; state.duration = 0;
+    state.capture = null;
+    resetLive();
     $('#preview').hidden = true; $('#audio-preview').removeAttribute('src');
-    $('#live-transcript').hidden = true; $('#live-transcript').textContent = '';
     $('#rec-timer').textContent = '00:00'; $('#rec-state').textContent = 'Sẵn sàng. Nhấn nút đỏ để bắt đầu.';
     $('#audio-file').value = '';
   }
   $('#btn-record').addEventListener('click', () => {
-    if (rec.recorder) stopRecording(); else startRecording();
+    if (isRecording()) stopRecording(); else startRecording();
   });
   $('#btn-pause').addEventListener('click', togglePause);
-  $('#btn-stop').addEventListener('click', stopRecording);
+  $('#btn-stop').addEventListener('click', () => stopRecording());
   $('#btn-discard').addEventListener('click', discardRecording);
   $('#audio-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const ext = (file.name.split('.').pop() || 'webm').toLowerCase();
-    // Phụ đề trực tiếp thuộc về bản ghi micro trước đó, không phải file này
-    state.liveTranscript = '';
-    $('#live-transcript').hidden = true; $('#live-transcript').textContent = '';
-    setBlob(file, ext, 0);
+    // Văn bản nhận dạng trực tiếp thuộc về bản ghi micro trước đó, không phải file này
+    resetLive();
+    setCapture({ blob: file, ext, duration: 0, text: '' });
     $('#rec-state').textContent = `Đã chọn file: ${file.name}`;
     if (!$('#meeting-title').value) $('#meeting-title').value = file.name.replace(/\.[^.]+$/, '');
   });
 
   // ----------------------------------------------------------- processing
+  function participantList() {
+    return $('#meeting-participants').value.split(',').map((s) => s.trim()).filter(Boolean);
+  }
   function meetingPayload() {
-    return {
-      title: $('#meeting-title').value.trim(),
-      participants: $('#meeting-participants').value.split(',').map((s) => s.trim()).filter(Boolean),
-      language: $('#meeting-language').value || 'auto',
-    };
+    return { title: $('#meeting-title').value.trim(), participants: participantList(), language: $('#meeting-language').value || 'auto' };
+  }
+  /* Người dùng không đặt tiêu đề: lấy chủ đề của chính nội dung, không có thì đặt theo ngày giờ. */
+  function autoTitle(text, kind) {
+    let title = '';
+    try { title = text && engine ? engine.titleFor(text, $('#meeting-language').value || 'auto') : ''; } catch (_) { title = ''; }
+    if (title) return title;
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${kind} ${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
   function setProgress(text) {
     $('#progress').hidden = !text;
@@ -410,29 +688,38 @@
     $('#btn-analyze-text').disabled = !!text;
   }
   async function processRecording() {
-    if (!state.blob) { toast('Chưa có bản ghi âm', true); return; }
-    const blob = state.blob;
+    const capture = state.capture;
+    if (!capture) { toast('Chưa có bản ghi âm', true); return; }
     try {
       setProgress('Đang tạo cuộc họp…');
-      const meeting = await api.post('/api/meetings', meetingPayload());
-      setProgress('Đang tải âm thanh lên…');
-      const form = new FormData();
-      form.append('audio', blob, `recording.${state.blobExt}`);
-      if (state.duration) form.append('duration_sec', String(state.duration));
-      if (state.liveTranscript.trim()) form.append('live_transcript', state.liveTranscript.trim());
-      await api.upload(`/api/meetings/${meeting.id}/audio`, form);
-      await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: true });
+      const payload = meetingPayload();
+      if (!payload.title) payload.title = autoTitle(capture.text, 'Ghi âm');
+      if (!capture.blob && capture.duration) payload.duration_sec = capture.duration;
+      const meeting = await api.post('/api/meetings', payload);
+      if (capture.blob) {
+        setProgress(LOCAL ? 'Đang lưu âm thanh…' : 'Đang tải âm thanh lên…');
+        const form = new FormData();
+        form.append('audio', capture.blob, `recording.${capture.ext}`);
+        if (capture.duration) form.append('duration_sec', String(capture.duration));
+        if (capture.text) form.append('live_transcript', capture.text);
+        await api.upload(`/api/meetings/${meeting.id}/audio`, form);
+      } else {
+        await api.put(`/api/meetings/${meeting.id}/transcript`, { transcript: capture.text, source: 'device' });
+      }
+      await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: !!capture.blob });
       setProgress('Đang xử lý…');
       await loadMeetings();
-      startPolling(meeting.id, { blob });
+      startPolling(meeting.id, { capture });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
   async function analyzeText() {
     const text = $('#manual-transcript').value.trim();
-    if (!text) { toast('Hãy dán transcript trước', true); return; }
+    if (!text) { toast('Hãy dán văn bản trước', true); return; }
     try {
       setProgress('Đang tạo cuộc họp…');
-      const meeting = await api.post('/api/meetings', meetingPayload());
+      const payload = meetingPayload();
+      if (!payload.title) payload.title = autoTitle(text, 'Ghi chú');
+      const meeting = await api.post('/api/meetings', payload);
       await api.put(`/api/meetings/${meeting.id}/transcript`, { transcript: text });
       await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: false });
       setProgress('Đang tóm tắt…');
@@ -451,7 +738,7 @@
     const p = pollers.get(id);
     if (p) { clearInterval(p.timer); pollers.delete(id); }
   }
-  /* submitted: thứ người dùng vừa gửi đi từ tab Ghi âm ({blob} hoặc {text}); bỏ trống khi phân tích lại. */
+  /* submitted: thứ người dùng vừa gửi đi từ tab Ghi âm ({capture} hoặc {text}); bỏ trống khi phân tích lại. */
   function startPolling(id, submitted) {
     const prev = pollers.get(id);
     stopPolling(id);
@@ -482,11 +769,12 @@
       stopPolling(id);
       loadMeetings().catch(() => {});
       // Người dùng đang ghi âm hoặc có bản ghi mới chưa gửi: không đụng tới, không kéo họ đi
-      const busyRecording = !!rec.recorder || rec.starting || (!!state.blob && !(p.submitted && p.submitted.blob === state.blob));
+      const busyRecording = isRecording() || rec.starting || !!rec.stopping
+        || (!!state.capture && !(p.submitted && p.submitted.capture === state.capture));
       if (fromRecorder) {
         setProgress('');
         // Chỉ dọn đúng thứ đã gửi đi; bản ghi/ghi chú người dùng làm thêm trong lúc chờ phải còn nguyên
-        if (p.submitted.blob && state.blob === p.submitted.blob && !rec.recorder) discardRecording();
+        if (p.submitted.capture && state.capture === p.submitted.capture && !isRecording() && !rec.starting && !rec.stopping) discardRecording();
         if (p.submitted.text && $('#manual-transcript').value.trim() === p.submitted.text) $('#manual-transcript').value = '';
       }
       const viewingOther = !!state.current && state.current.id !== id;
@@ -498,7 +786,7 @@
       renderMeeting(m);
       showTab('result');
       if (m.status === 'error') toast(`Xử lý lỗi: ${m.error}`, true);
-      else toast(`Xong! Engine: ${m.engine || (m.analysis && m.analysis.engine) || ''}`);
+      else toast(`Xong! Tóm tắt bằng ${engineLabel(m.engine || (m.analysis && m.analysis.engine) || '')}`);
     };
     p.timer = setInterval(tick, 1500);
     pollers.set(id, p);
@@ -523,6 +811,21 @@
     tr.querySelector('button').addEventListener('click', () => tr.remove());
     return tr;
   }
+  function showResultAudio(m) {
+    const audio = $('#result-audio');
+    if (state.audioUrl) { URL.revokeObjectURL(state.audioUrl); state.audioUrl = ''; }
+    if (!m.has_audio) { audio.hidden = true; audio.removeAttribute('src'); return; }
+    if (!LOCAL) { audio.hidden = false; audio.src = apiUrl(`/api/meetings/${m.id}/audio?t=${Date.now()}`); return; }
+    audio.hidden = true;
+    audio.removeAttribute('src');
+    local.audioUrl(m.id).then((url) => {
+      if (!url) return;
+      if (!state.current || state.current.id !== m.id) { URL.revokeObjectURL(url); return; }
+      state.audioUrl = url;
+      audio.src = url;
+      audio.hidden = false;
+    }).catch(() => {});
+  }
   function renderMeeting(m) {
     state.current = m;
     $('#result-empty').hidden = true;
@@ -533,8 +836,8 @@
     const metaParts = [fmtDate(m.created_at)];
     if (m.duration_sec) metaParts.push(`⏱ ${fmtTime(m.duration_sec)}`);
     if (m.participants && m.participants.length) metaParts.push(`👥 ${m.participants.join(', ')}`);
-    if (a.engine) metaParts.push(`⚙ ${a.engine}${a.edited ? ' (đã sửa)' : ''}`);
-    if (a.context_used) metaParts.push(`🧠 bối cảnh: ${ctx.glossary_terms || 0} thuật ngữ, ${ctx.past_meetings || 0} họp trước, ${ctx.examples || 0} ví dụ`);
+    if (a.engine) metaParts.push(`⚙ ${engineLabel(a.engine)}${a.edited ? ' (đã sửa)' : ''}`);
+    if (a.context_used) metaParts.push(`🧠 đã học: ${ctx.glossary_terms || 0} thuật ngữ, ${ctx.past_meetings || 0} họp trước, ${ctx.examples || 0} ví dụ`);
     $('#result-meta').textContent = metaParts.join('  ·  ');
     renderStatus(m);
     $('#edit-summary').value = (a.summary || []).map((s) => `- ${s}`).join('\n');
@@ -544,15 +847,24 @@
     (a.action_items || []).forEach((item) => tbody.appendChild(actionRow(item)));
     $('#edit-keywords').value = (a.keywords || []).join(', ');
     $('#edit-transcript').value = m.transcript || '';
-    $('#transcript-source').textContent = m.transcript_source ? `(nguồn: ${m.transcript_source})` : '';
-    const audio = $('#result-audio');
-    if (m.has_audio) { audio.hidden = false; audio.src = apiUrl(`/api/meetings/${m.id}/audio?t=${Date.now()}`); } else { audio.hidden = true; audio.removeAttribute('src'); }
-    $('#btn-export-md').href = apiUrl(`/api/meetings/${m.id}/export.md`);
+    $('#transcript-source').textContent = m.transcript_source ? `(${sourceLabel(m.transcript_source)})` : '';
+    showResultAudio(m);
+    $('#btn-export-md').href = LOCAL ? '#' : apiUrl(`/api/meetings/${m.id}/export.md`);
     $('#btn-export-md').download = `${m.title}.md`;
     state.mindmap.setTree(a.mindmap || { title: m.title, children: [] });
     state.rating = 0; renderStars();
     $('#rating-comment').value = ''; $('#rating-msg').textContent = ''; $('#save-analysis-msg').textContent = ''; $('#save-transcript-msg').textContent = '';
   }
+  // Chế độ độc lập không có máy chủ để tải file về: tự dựng biên bản Markdown ngay trên máy
+  $('#btn-export-md').addEventListener('click', async (e) => {
+    if (!LOCAL) return;
+    e.preventDefault();
+    if (!state.current) return;
+    try {
+      const markdown = await local.exportMarkdown(state.current.id);
+      download(`${state.current.title}.md`, new Blob([markdown], { type: 'text/markdown;charset=utf-8' }));
+    } catch (err) { toast(err.message, true); }
+  });
   function collectAnalysis() {
     const items = $$('#actions-table tbody tr').map((tr) => ({
       task: tr.querySelector('.a-task').value.trim(), owner: tr.querySelector('.a-owner').value.trim(), due: tr.querySelector('.a-due').value.trim(),
@@ -572,7 +884,9 @@
       const m = await api.put(`/api/meetings/${state.current.id}/analysis`, collectAnalysis());
       const learned = m.learning && m.learning.learned;
       renderMeeting(m);
-      $('#save-analysis-msg').textContent = learned ? 'Đã lưu. AI đã ghi nhận bản sửa này làm ví dụ mẫu.' : 'Đã lưu (không có thay đổi).';
+      const learnedMsg = LOCAL ? 'Đã lưu. Ứng dụng ghi nhận cách trình bày bạn thích cho các lần sau.'
+        : 'Đã lưu. Bản sửa này được ghi nhận làm ví dụ mẫu cho các lần sau.';
+      $('#save-analysis-msg').textContent = learned ? learnedMsg : 'Đã lưu (không có thay đổi).';
       toast(learned ? 'Đã lưu và học từ chỉnh sửa của bạn' : 'Đã lưu');
     } catch (err) { toast(err.message, true); }
   });
@@ -591,7 +905,7 @@
       const learned = m.learned_corrections || [];
       $('#save-transcript-msg').textContent = learned.length
         ? `Đã lưu. Ghi nhận ${learned.length} cặp sửa lỗi: ${learned.map((l) => `"${l.variant}"→"${l.term}"`).join(', ')}`
-        : 'Đã lưu transcript.';
+        : 'Đã lưu văn bản.';
       if (reanalyze) { state.current = m; startPolling(m.id); } else { state.current = m; }
     } catch (err) { toast(err.message, true); }
   }
@@ -605,11 +919,12 @@
     } catch (err) { toast(err.message, true); }
   });
   $('#btn-delete').addEventListener('click', async () => {
-    if (!state.current || !confirm(`Xóa cuộc họp "${state.current.title}"? Trí nhớ liên quan cũng bị xóa.`)) return;
+    if (!state.current || !confirm(`Xóa cuộc họp "${state.current.title}"? Dữ liệu đã học từ cuộc họp này cũng bị xóa.`)) return;
     try {
       await api.del(`/api/meetings/${state.current.id}`);
       stopPolling(state.current.id);
       state.current = null;
+      if (state.audioUrl) { URL.revokeObjectURL(state.audioUrl); state.audioUrl = ''; }
       $('#result-body').hidden = true; $('#result-empty').hidden = false;
       await loadMeetings();
       toast('Đã xóa');
@@ -630,7 +945,8 @@
   });
 
   // -------------------------------------------------------------- mindmap
-  state.mindmap = new MindMap($('#mindmap'), { onChange: () => { $('#save-analysis-msg').textContent = 'Mind map có thay đổi chưa lưu.'; } });
+  state.mindmap = new MindMap($('#mindmap'), { onChange: () => { $('#save-analysis-msg').textContent = 'Sơ đồ tư duy có thay đổi chưa lưu.'; } });
+  state.liveMap = new MindMap($('#live-mindmap'), { readOnly: true });
   $('#mm-zoom-in').addEventListener('click', () => state.mindmap.zoom(1.25));
   $('#mm-zoom-out').addEventListener('click', () => state.mindmap.zoom(0.8));
   $('#mm-fit').addEventListener('click', () => state.mindmap.fit());
@@ -649,37 +965,56 @@
   function statCard(value, label) {
     return `<div class="stat"><div class="value">${esc(value)}</div><div class="label">${esc(label)}</div></div>`;
   }
+  function renderSetup(stats, h) {
+    const support = sttSupport();
+    const hints = [];
+    if (LOCAL) {
+      hints.push('<div class="hint">📱 <b>Đang chạy độc lập trên máy này</b>: không cần máy chủ, không cần AI. Muốn dùng thêm Whisper/LLM, mở mục "Máy chủ AI (tùy chọn)" ở đầu trang.</div>');
+      if (!support.provider) hints.push('<div class="hint">🎙 <b>Máy này không có nhận dạng giọng nói.</b> Bạn vẫn dán văn bản để tóm tắt và vẽ sơ đồ tư duy được.</div>');
+    } else {
+      if (!h.whisper.available) {
+        hints.push(support.provider
+          ? '<div class="hint">🎙 <b>Giọng nói đang được chuyển thành văn bản ngay khi nói</b> bằng nhận dạng của trình duyệt/thiết bị. Muốn nhận dạng offline từ file ghi âm: <code>pip install faster-whisper</code> rồi khởi động lại (tùy chọn).</div>'
+          : '<div class="hint">🎙 <b>Trình duyệt này không có nhận dạng giọng nói.</b> Hãy dùng Chrome/Edge/Safari, dán văn bản, hoặc cài <code>pip install faster-whisper</code> trên máy chủ.</div>');
+      }
+      if (!h.ollama.available) {
+        hints.push(`<div class="hint">🧩 <b>Đang tóm tắt bằng thuật toán, không cần AI.</b> Muốn dùng LLM local (tùy chọn): cài Ollama tại <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a> (${esc(h.ollama.url)}), rồi chạy <code>ollama pull ${esc(h.ollama.model)}</code> và <code>ollama pull ${esc(h.ollama.embed_model)}</code>.</div>`);
+      } else {
+        if (!h.ollama.model_ready) hints.push(`<div class="hint">🤖 Ollama đang chạy nhưng thiếu model LLM. Chạy: <code>ollama pull ${esc(h.ollama.model)}</code> (hoặc đổi OLLAMA_MODEL sang một model đã có: ${esc(h.ollama.models.join(', ') || 'chưa có')}).</div>`);
+        if (!h.ollama.embed_ready) hints.push(`<div class="hint">🧠 Thiếu model nhúng để tìm trí nhớ theo ngữ nghĩa. Chạy: <code>ollama pull ${esc(h.ollama.embed_model)}</code> rồi nhấn "Nhúng lại trí nhớ".</div>`);
+      }
+    }
+    const styleHints = (stats.style_hints || []).map((s) => `<li>${esc(s)}</li>`).join('');
+    const head = LOCAL
+      ? `<p>Cách tóm tắt hiện tại: <b>${esc(engineLabel(stats.engine))}</b></p>`
+      : `<p>Cách tóm tắt hiện tại: <b>${esc(engineLabel(stats.engine))}</b> · Tìm trong trí nhớ bằng: <b>${esc(stats.memory.embedder)}</b></p>`;
+    $('#ai-setup').innerHTML = head + (styleHints ? `<p>Phong cách đã học từ bạn:</p><ul>${styleHints}</ul>` : '') + hints.join('');
+  }
   async function loadLearning() {
     try {
       const [stats, glossary, events] = await Promise.all([
         api.get('/api/learning/stats'), api.get('/api/glossary'), api.get('/api/learning/events?limit=60'),
       ]);
-      $('#stats').innerHTML = [
-        statCard(stats.analyzed, 'cuộc họp đã phân tích'),
-        statCard(stats.memory.meetings + stats.memory.chunks, 'mảnh trí nhớ'),
-        statCard(stats.memory.examples, 'ví dụ mẫu đã học'),
+      const cards = [
+        statCard(stats.analyzed, 'bản ghi đã tóm tắt'),
+        statCard(stats.memory.meetings + stats.memory.chunks, LOCAL ? 'đoạn tìm lại được' : 'mảnh trí nhớ'),
+      ];
+      if (!LOCAL) cards.push(statCard(stats.memory.examples, 'ví dụ mẫu đã học'));
+      cards.push(
         statCard(`${stats.glossary.active}/${stats.glossary.total}`, 'thuật ngữ đang áp dụng'),
-        statCard(stats.glossary.hits, 'lần tự sửa transcript'),
+        statCard(stats.glossary.hits, 'lần tự sửa văn bản'),
         statCard(stats.feedback.edits, 'lần học từ chỉnh sửa'),
         statCard(stats.feedback.avg_rating != null ? `${stats.feedback.avg_rating}★` : '–', `đánh giá TB (${stats.feedback.ratings})`),
-      ].join('');
+      );
+      $('#stats').innerHTML = cards.join('');
       const h = state.health || await api.get('/api/health');
-      const hints = [];
-      if (!h.whisper.available) hints.push('<div class="hint">🎧 <b>Chưa có nhận dạng giọng nói offline.</b> Cài: <code>pip install faster-whisper</code> rồi khởi động lại. Model được tải lần đầu (WHISPER_MODEL=small ≈ 500MB). Tạm thời bạn có thể bật "Phụ đề trực tiếp" khi ghi âm hoặc dán transcript thủ công.</div>');
-      if (!h.ollama.available) hints.push(`<div class="hint">🤖 <b>Chưa kết nối được Ollama</b> (${esc(h.ollama.url)}) nên đang dùng tóm tắt heuristic. Cài Ollama tại <a href="https://ollama.com" target="_blank" rel="noopener">ollama.com</a>, rồi chạy <code>ollama pull ${esc(h.ollama.model)}</code> và <code>ollama pull ${esc(h.ollama.embed_model)}</code>.</div>`);
-      else {
-        if (!h.ollama.model_ready) hints.push(`<div class="hint">🤖 Ollama đang chạy nhưng thiếu model LLM. Chạy: <code>ollama pull ${esc(h.ollama.model)}</code> (hoặc đổi OLLAMA_MODEL sang một model đã có: ${esc(h.ollama.models.join(', ') || 'chưa có')}).</div>`);
-        if (!h.ollama.embed_ready) hints.push(`<div class="hint">🧠 Thiếu model nhúng để tìm trí nhớ theo ngữ nghĩa. Chạy: <code>ollama pull ${esc(h.ollama.embed_model)}</code> rồi nhấn "Nhúng lại trí nhớ".</div>`);
-      }
-      const styleHints = (stats.style_hints || []).map((s) => `<li>${esc(s)}</li>`).join('');
-      $('#ai-setup').innerHTML = `<p>Engine tóm tắt hiện tại: <b>${esc(stats.engine)}</b> · Nhúng: <b>${esc(stats.memory.embedder)}</b></p>` +
-        (styleHints ? `<p>Phong cách đã học từ bạn:</p><ul>${styleHints}</ul>` : '') + hints.join('');
+      renderSetup(stats, h);
       const tbody = $('#glossary-table tbody');
       tbody.innerHTML = '';
       if (!glossary.length) tbody.innerHTML = '<tr><td colspan="6" class="muted">Chưa có thuật ngữ nào.</td></tr>';
       for (const g of glossary) {
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td></td><td></td><td>${g.source === 'user' ? 'bạn thêm' : 'AI suy ra'}</td><td>${esc(g.count)} (dùng ${esc(g.hits)})</td><td>${g.active ? '✅' : '⏳'}</td><td><button class="icon-btn" title="Xóa thuật ngữ" aria-label="Xóa thuật ngữ">✕</button></td>`;
+        tr.innerHTML = `<td></td><td></td><td>${g.source === 'user' ? 'bạn thêm' : 'tự suy ra'}</td><td>${esc(g.count)} (dùng ${esc(g.hits)})</td><td>${g.active ? '✅' : '⏳'}</td><td><button class="icon-btn" title="Xóa thuật ngữ" aria-label="Xóa thuật ngữ">✕</button></td>`;
         tr.children[0].textContent = g.term;
         tr.children[1].textContent = g.variant || '—';
         tr.querySelector('button').addEventListener('click', async () => {
@@ -710,7 +1045,7 @@
     const q = $('#ask-input').value.trim();
     if (!q) return;
     const box = $('#ask-answer');
-    box.hidden = false; box.textContent = 'Đang tìm trong trí nhớ…';
+    box.hidden = false; box.textContent = 'Đang tìm trong các bản ghi…';
     try {
       const r = await api.post('/api/learning/ask', { question: q });
       box.textContent = r.answer;
@@ -738,23 +1073,18 @@
 
   // Đóng/tải lại trang khi đang ghi âm hoặc còn bản ghi chưa gửi: hỏi lại để không mất bản ghi
   window.addEventListener('beforeunload', (e) => {
-    if (rec.recorder || state.blob) { e.preventDefault(); e.returnValue = ''; }
+    if (isRecording() || rec.stopping || state.capture) { e.preventDefault(); e.returnValue = ''; }
   });
 
   // ----------------------------------------------------------------- init
   setupServerBox();
   $('#link-export-jsonl').href = apiUrl('/api/learning/export');
-  if (IS_MOBILE && !API_BASE) {
-    // Chưa cấu hình máy chủ: không gọi API, chỉ hướng dẫn nhập địa chỉ
-    $('#server-box').classList.add('warn');
-    $('#badge-whisper').className = 'badge off'; $('#badge-whisper').textContent = 'Whisper: ?';
-    $('#badge-ollama').className = 'badge off'; $('#badge-ollama').textContent = 'Chưa kết nối máy chủ';
-    $('#badge-memory').className = 'badge off'; $('#badge-memory').textContent = 'Trí nhớ: ?';
-    $('#meeting-list').innerHTML = '<li class="muted small" style="cursor:default">Nhập địa chỉ máy chủ AI (máy tính chạy ./run.sh --host 0.0.0.0) ở phía trên rồi nhấn Kết nối.</li>';
-    $('#server-url').focus();
-  } else {
-    loadHealth();
-    loadMeetings().catch((err) => toast(err.message, true));
-    setInterval(loadHealth, 30000);
-  }
+  // xuất JSONL và nhúng lại trí nhớ là việc của máy chủ AI: chế độ độc lập không có
+  $('#link-export-jsonl').hidden = LOCAL;
+  $('#btn-reindex').hidden = LOCAL;
+  $('#live-captions').checked = true;   // mặc định cho tới khi biết máy chủ có Whisper hay không
+  renderSttLine();
+  loadHealth();
+  loadMeetings().catch((err) => toast(err.message, true));
+  if (!LOCAL) setInterval(loadHealth, 30000);
 })();

@@ -32,6 +32,7 @@ def build_context(transcript: str, title: str, *, memory: MemoryStore, glossary:
             for m in examples
         ],
         "style_hints": feedback.style_hints(language),
+        "style": feedback.style_numbers(),
     }
 
 

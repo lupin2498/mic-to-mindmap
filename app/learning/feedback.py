@@ -137,6 +137,20 @@ class FeedbackLearner:
             hints.append((f"Góp ý trước đây của người dùng: {comment}" if vi else f"Earlier user feedback: {comment}"))
         return hints
 
+    def style_numbers(self) -> dict:
+        """Số ý chính và số nhánh sơ đồ người dùng hay giữ, để bộ tóm tắt không cần AI làm đúng cỡ đó.
+
+        Chỉ có sau ít nhất hai lần sửa: một lần sửa chưa nói lên thói quen."""
+        style = self._style()
+        if int(style.get("edits", 0)) < 2:
+            return {}
+        numbers = {}
+        if style.get("avg_summary_items"):
+            numbers["summary_items"] = style["avg_summary_items"]
+        if style.get("avg_branches"):
+            numbers["branches"] = style["avg_branches"]
+        return numbers
+
     def stats(self) -> dict:
         style = self._style()
         ratings = style.get("ratings") or []

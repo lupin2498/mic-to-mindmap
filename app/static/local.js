@@ -693,7 +693,9 @@
     events.sort((a, b) => b.id - a.id);
     return events.slice(0, Math.max(1, Math.min(limit || 50, 500)));
   }
-  function health() {
+  async function health() {
+    // đọc thử một lần: nếu trình duyệt không cho mở IndexedDB thì lúc này kho đã chuyển sang bộ nhớ tạm
+    await get('prefs', 'style').catch(() => {});
     return {
       version: root.M2M_VERSION || '', standalone: true, storage: db().kind,
       whisper: { available: false, loaded: false, model: null, error: 'Chế độ độc lập không dùng Whisper' },
