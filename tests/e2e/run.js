@@ -719,6 +719,29 @@ step('polling: hai cuộc họp xử lý cùng lúc không làm kẹt thanh ti�
   eq(await page.inputValue('#manual-transcript'), '', 'ô transcript đã xử lý được dọn');
 });
 
+step('polling-som: gửi xong mở ngay cuộc họp khác, lúc máy chủ còn chưa trả lời, thì xong cũng không bị kéo đi', async (ctx) => {
+  await seedMeeting('Họp đang xem');
+  const page = ctx.page = await open(null, DESKTOP);
+  // Làm chậm lời gọi "xử lý": người dùng kịp bấm sang cuộc họp khác trước khi ứng dụng bắt đầu hỏi trạng thái.
+  // (Trên máy chậm khoảng trống này có thật; CI từng đỏ vì nó.)
+  await page.route(/\/api\/meetings\/[0-9a-f]{12}\/process$/, async (route) => {
+    await new Promise((r) => setTimeout(r, 700));
+    return route.continue();
+  });
+  await page.goto(API + '/');
+  await analyzeText(page, 'Họp gửi rồi đi');
+  await until(() => page.evaluate(() => !document.querySelector('#progress').hidden), 'đang gửi');
+  await page.click('#meeting-list li:has-text("Họp đang xem")');
+  await waitResult(page, 'Họp đang xem');
+  await page.fill('#edit-summary', '- đang sửa dở, đừng kéo tôi đi');
+  await until(() => page.evaluate(() => /Họp gửi rồi đi.*xử lý xong/.test(document.querySelector('#toast').textContent)), 'báo cuộc họp vừa gửi đã xong', 12000);
+  eq(await page.inputValue('#result-title'), 'Họp đang xem', 'vẫn ở cuộc họp đang xem');
+  eq(await page.inputValue('#edit-summary'), '- đang sửa dở, đừng kéo tôi đi', 'nội dung đang sửa còn nguyên');
+  await page.click('.tab[data-tab="record"]');
+  assert(await page.isHidden('#progress'), 'thanh tiến trình không kẹt');
+  eq(await page.inputValue('#manual-transcript'), '', 'ô văn bản đã gửi được dọn');
+});
+
 step('mang: mất mạng thoáng qua lúc polling không làm kẹt, mất hẳn thì báo lỗi', async (ctx) => {
   const page = ctx.page = await open(null, DESKTOP);
   const held = await holdProcessing(page);

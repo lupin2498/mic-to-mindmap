@@ -692,6 +692,7 @@
     if (!capture) { toast('Chưa có bản ghi âm', true); return; }
     try {
       setProgress('Đang tạo cuộc họp…');
+      const nav = openSeq;   // để biết người dùng có mở cuộc họp khác trong lúc đang gửi hay không
       const payload = meetingPayload();
       if (!payload.title) payload.title = autoTitle(capture.text, 'Ghi âm');
       if (!capture.blob && capture.duration) payload.duration_sec = capture.duration;
@@ -709,7 +710,7 @@
       await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: !!capture.blob });
       setProgress('Đang xử lý…');
       await loadMeetings();
-      startPolling(meeting.id, { capture });
+      startPolling(meeting.id, { capture, nav });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
   async function analyzeText() {
@@ -717,6 +718,7 @@
     if (!text) { toast('Hãy dán văn bản trước', true); return; }
     try {
       setProgress('Đang tạo cuộc họp…');
+      const nav = openSeq;
       const payload = meetingPayload();
       if (!payload.title) payload.title = autoTitle(text, 'Ghi chú');
       const meeting = await api.post('/api/meetings', payload);
@@ -724,7 +726,7 @@
       await api.post(`/api/meetings/${meeting.id}/process`, { transcribe: false });
       setProgress('Đang tóm tắt…');
       await loadMeetings();
-      startPolling(meeting.id, { text });
+      startPolling(meeting.id, { text, nav });
     } catch (err) { setProgress(''); toast(err.message, true); }
   }
   $('#btn-process').addEventListener('click', processRecording);
@@ -738,11 +740,15 @@
     const p = pollers.get(id);
     if (p) { clearInterval(p.timer); pollers.delete(id); }
   }
-  /* submitted: thứ người dùng vừa gửi đi từ tab Ghi âm ({capture} hoặc {text}); bỏ trống khi phân tích lại. */
+  /* submitted: thứ người dùng vừa gửi đi từ tab Ghi âm ({capture} hoặc {text}, kèm nav = openSeq lúc bấm gửi);
+     bỏ trống khi phân tích lại. */
   function startPolling(id, submitted) {
     const prev = pollers.get(id);
     stopPolling(id);
     const p = { submitted: submitted || (prev && prev.submitted) || null, busy: false, failures: 0, navigated: false, timer: null };
+    // Người dùng đã mở cuộc họp khác ngay trong lúc đang gửi (trước khi có bộ hỏi trạng thái này): cũng tính là đã rời đi
+    if (prev && prev.navigated) p.navigated = true;
+    if (submitted && submitted.nav !== undefined && submitted.nav !== openSeq) p.navigated = true;
     const fromRecorder = !!p.submitted;
     const tick = async () => {
       if (p.busy || pollers.get(id) !== p) return;

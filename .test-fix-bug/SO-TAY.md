@@ -2,7 +2,7 @@
 <!-- Agent test-fix-bug tự cập nhật sau mỗi lần chạy. -->
 ## Lệnh và môi trường
 - test backend: `python3 -m pytest -q` (118 test, khoảng 30 giây, không cần Ollama/Whisper thật; `tests/test_engine_parity.py` cần `node` để so bản JavaScript của bộ máy với bản Python, không có thì tự bỏ qua)
-- E2E giao diện: `E2E_OUT=<thư mục tạm> node tests/e2e/run.js` (30 bước, khoảng 2 phút, tự bật máy chủ trên dữ liệu tạm; `--grep <chuỗi>` lọc theo chuỗi con của tên bước, không phải biểu thức chính quy; Chromium và Playwright cài sẵn, không chạy `playwright install`)
+- E2E giao diện: `E2E_OUT=<thư mục tạm> node tests/e2e/run.js` (31 bước, khoảng 2 phút, tự bật máy chủ trên dữ liệu tạm; `--grep <chuỗi>` lọc theo chuỗi con của tên bước, không phải biểu thức chính quy; Chromium và Playwright cài sẵn, không chạy `playwright install`)
 - test Android trên JVM: `./gradlew testDebugUnitTest` trong `mobile/android` (chỉ chạy được trên CI; tại chỗ không có Android SDK)
 - máy chủ thử tay: `M2M_DISABLE_WHISPER=1 M2M_DATA_DIR=<tạm> python3 -m uvicorn app.main:app --port 8765`
 - thăm dò nhanh không cần máy chủ: `TestClient(create_app(Settings(data_dir=..., sync_jobs=True, disable_ollama=True, disable_whisper=True)), raise_server_exceptions=False)`
@@ -22,13 +22,15 @@
 - [2026-11-14] Bộ máy không cần AI có hai bản phải khớp từng ký tự: `app/heuristic.py` + `app/textutil.py` và `app/static/engine.js`, dữ liệu chung ở `app/static/engine-data.js` → sửa luật ở một bên thì sửa bên kia rồi chạy `tests/test_engine_parity.py`; biểu thức chính quy dùng chung không dùng `\b`, `\d`, lookbehind.
 - [2026-11-14] Máy CI dùng phông rộng hơn máy phát triển nên chữ trong nút sơ đồ xuống dòng ở chỗ khác → đừng khẳng định theo vị trí xuống dòng; đọc chữ của nút bằng `.mm-node > text` (đã giữ dấu cách ở chỗ xuống dòng).
 - [2026-11-14] E2E không có micro thật lẫn dịch vụ nhận dạng: `fakeWebSpeech` / `fakeNativeSpeech` trong `tests/e2e/run.js` thay Web Speech API và plugin `M2MSpeech`, điều khiển bằng `say()` / `nativeSay()`.
+- [2026-11-14] Chờ một dòng chữ tiến trình rồi mới thao tác tiếp không bảo đảm ứng dụng đã làm xong bước sau dòng chữ đó (bước `polling` từng đỏ một lần trên CI, lộ ra lỗi thật: gửi xong mở ngay cuộc họp khác thì bị kéo đi) → muốn tái hiện chắc chắn thì làm chậm đúng lời gọi bằng `page.route`, như bước `polling-som`.
+- [2026-11-14] Máy này không tải được artifact của Actions (máy chủ blob bị chặn); log của job thì đọc được bằng `get_job_logs`.
 
 ## Bản đồ phủ
 - Lõi văn bản, heuristic, mind map, đọc JSON của LLM: unit + fuzz hạt giống cố định; còn thiếu ngôn ngữ ngoài Việt/Anh.
 - API và pipeline: test tích hợp với SQLite thật, Ollama giả qua HTTP, Whisper giả; tương tranh bằng luồng thật và uvicorn thật; JSON thô hỏng (`tests/test_bad_input.py`). Còn thiếu: hai lượt tải lên đồng thời cho cùng cuộc họp; `Pipeline.start` gặp lỗi CSDL.
 - Tải file: tên lạ, rỗng, lớn, kiểu giả, dọn file cũ; còn thiếu giới hạn dung lượng (sản phẩm chưa có).
 - Bộ máy không cần AI: mẫu giống thật trong `tests/samples.py` (họp, bài giảng, ghi chú ngắn, văn bản nhận dạng giọng nói, giao việc đích danh), khẳng định hành vi ở `tests/test_engine.py`, so Python với JavaScript trên hơn 5.000 ca; còn thiếu bản ghi thật dài hàng giờ và ngôn ngữ ngoài Việt/Anh.
-- Giao diện: 30 bước E2E (máy tính, 390px, `mobile/www` khác origin, chế độ độc lập, nhận dạng giọng nói giả qua Web Speech API và plugin); chưa đụng `#mm-zoom-out`; chưa chạy Firefox, WebKit.
+- Giao diện: 31 bước E2E (máy tính, 390px, `mobile/www` khác origin, chế độ độc lập, nhận dạng giọng nói giả qua Web Speech API và plugin); chưa đụng `#mm-zoom-out`; chưa chạy Firefox, WebKit.
 - Di động: kiểm tĩnh cấu hình, `SpeechLoopTest` (JVM) và dựng gói trên CI; plugin Swift chỉ mới được biên dịch; chưa chạy app trên máy ảo hay thiết bị.
 - Whisper thật, Ollama thật: chưa kiểm.
 
@@ -48,4 +50,4 @@
 ## Nhật ký
 - 2026-11-13 | nhánh ccr-58431d82-km60c8 | lượt 1: toàn bộ backend, giao diện, cấu hình di động | pytest 45 → 94, E2E 0 → 19 | sửa 27 lỗi (7 nghiêm trọng) trong 5 commit | phiên bị ngắt trước khi viết sổ tay và báo cáo | không rõ thời lượng
 - 2026-11-13 | nhánh ccr-58431d82-km60c8 | lượt 2: dựng lại từ git, JSON thô hỏng, giới hạn ô nhập, báo cáo | pytest 100/100, E2E 20/20, CI Tests #5 và Mobile build #5 xanh | sửa 5 lỗi (0 nghiêm trọng) | 1 lần đỏ do bài test (khẳng định độ dài 200 so với 199) | khoảng 20 phút
-- 2026-11-14 | nhánh ccr-917aaad6-9ufq0r | nâng cấp (không phải lượt test-fix-bug): nói ra văn bản bằng nhận dạng của thiết bị, tóm tắt và sơ đồ tư duy bằng thuật toán, app chạy độc lập | pytest 100 → 118, E2E 20 → 30, thêm 18 test JVM cho Android | 2 lần đỏ trên CI do phông chữ khác máy phát triển (đã sửa ở `mindmap.js` và bài test)
+- 2026-11-14 | nhánh ccr-917aaad6-9ufq0r | nâng cấp (không phải lượt test-fix-bug): nói ra văn bản bằng nhận dạng của thiết bị, tóm tắt và sơ đồ tư duy bằng thuật toán, app chạy độc lập | pytest 100 → 118, E2E 20 → 31, thêm 18 test JVM cho Android | 2 lần đỏ trên CI do phông chữ khác máy phát triển (đã sửa ở `mindmap.js` và bài test)
