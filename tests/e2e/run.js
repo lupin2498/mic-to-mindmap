@@ -886,9 +886,15 @@ step('dien-thoai: bố cục 390px không tràn ngang, mind map đọc được'
   const mm = await page.evaluate(() => {
     const t = document.querySelector('#mindmap svg > g').getAttribute('transform');
     const root = document.querySelector('#mindmap .mm-node.root').getBoundingClientRect(), c = document.querySelector('#mindmap').getBoundingClientRect();
-    return { scale: Number(/scale\(([\d.]+)\)/.exec(t)[1]), rootInside: root.left >= c.left && root.right <= c.right && root.top >= c.top && root.bottom <= c.bottom };
+    const nodes = Array.from(document.querySelectorAll('#mindmap .mm-node')).map((n) => n.getBoundingClientRect());
+    return { scale: Number(/scale\(([\d.]+)\)/.exec(t)[1]), nodes: nodes.length,
+      rootInside: root.left >= c.left && root.right <= c.right && root.top >= c.top && root.bottom <= c.bottom,
+      rootOnTop: nodes.every((r) => r.top >= root.top - 30),
+      widthFits: nodes.every((r) => r.left >= c.left - 1 && r.right <= c.right + 1) };
   });
   assert(mm.scale >= 0.55 && mm.rootInside, `mind map đủ lớn và nút gốc nằm trong khung (${JSON.stringify(mm)})`);
+  // điện thoại cầm dọc: cả ba cấp vừa bề ngang (không phải kéo sang hai bên), đọc từ nút gốc ở trên cùng xuống
+  assert(mm.nodes >= 8 && mm.widthFits && mm.rootOnTop, `sơ đồ vừa bề ngang màn hình, nút gốc ở trên cùng (${JSON.stringify(mm)})`);
   assert(await page.isHidden('#result-status'), 'không hiện thanh trạng thái rỗng');
   const small = await page.evaluate(() => Array.from(document.querySelectorAll('.tab, #btn-new-meeting, #btn-reanalyze, #btn-save-analysis, #btn-delete'))
     .filter((n) => n.offsetParent !== null).map((n) => ({ id: n.id || n.dataset.tab, h: Math.round(n.getBoundingClientRect().height) })).filter((x) => x.h < 32));

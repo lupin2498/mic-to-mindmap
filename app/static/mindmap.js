@@ -1,5 +1,6 @@
-/* Sơ đồ tư duy SVG tương tác: bố cục hai phía, kéo/zoom (chuột, một ngón, chụm hai ngón), chọn, sửa chữ, thu gọn nhánh,
-   xuất SVG/PNG. options.readOnly = true: chỉ xem (dùng cho bản xem trước lúc đang nói). */
+/* Sơ đồ tư duy SVG tương tác: bố cục hai phía (điện thoại cầm dọc: một phía, nút gốc ở trên cùng, vừa bề ngang màn
+   hình), kéo/zoom (chuột, một ngón, chụm hai ngón), chọn, sửa chữ, thu gọn nhánh, xuất SVG/PNG.
+   options.readOnly = true: chỉ xem (dùng cho bản xem trước lúc đang nói). */
 (function (global) {
   'use strict';
   const NS = 'http://www.w3.org/2000/svg';
@@ -9,13 +10,16 @@
   const ROOT_FONT = `bold 15px ${FONT_FAMILY}`;
   const PAD_X = 12, PAD_Y = 7, LINE_H = 17, ROOT_LINE_H = 20, MAX_W = 220, ROOT_MAX_W = 260;
   const LEVEL_GAP = 64, V_GAP = 10, MAX_LINES = 5;
+  // Điện thoại cầm dọc: nút hẹp hơn, các cấp sát nhau hơn để cả ba cấp vừa bề ngang màn hình mà chữ vẫn đọc được
+  const NARROW_MAX_W = 150, NARROW_ROOT_MAX_W = 110, NARROW_LEVEL_GAP = 26, NARROW_MAX_LINES = 7;
 
   const measureCanvas = document.createElement('canvas').getContext('2d');
   function textWidth(text, font) {
     measureCanvas.font = font;
     return measureCanvas.measureText(text).width;
   }
-  function wrap(text, font, maxWidth) {
+  function wrap(text, font, maxWidth, maxLines) {
+    const limit = maxLines || MAX_LINES;
     const words = String(text || '').split(/\s+/).filter(Boolean);
     const lines = [];
     let line = '';
@@ -29,9 +33,9 @@
       }
     }
     if (line) lines.push(line);
-    if (lines.length > MAX_LINES) {
-      const kept = lines.slice(0, MAX_LINES);
-      kept[MAX_LINES - 1] = kept[MAX_LINES - 1].replace(/\s*\S*$/, '') + '…';
+    if (lines.length > limit) {
+      const kept = lines.slice(0, limit);
+      kept[limit - 1] = kept[limit - 1].replace(/\s*\S*$/, '') + '…';
       return kept;
     }
     return lines.length ? lines : [''];
@@ -95,7 +99,9 @@
     // ------------------------------------------------------------ bố cục
     _size(node) {
       const isRoot = node.depth === 0;
-      node.lines = wrap(node.title || (isRoot ? 'Cuộc họp' : '…'), isRoot ? ROOT_FONT : FONT, isRoot ? ROOT_MAX_W : MAX_W);
+      const maxWidth = this.oneSided ? (isRoot ? NARROW_ROOT_MAX_W : NARROW_MAX_W) : (isRoot ? ROOT_MAX_W : MAX_W);
+      node.lines = wrap(node.title || (isRoot ? 'Cuộc họp' : '…'), isRoot ? ROOT_FONT : FONT, maxWidth,
+        this.oneSided ? NARROW_MAX_LINES : MAX_LINES);
       const lineH = isRoot ? ROOT_LINE_H : LINE_H;
       const width = Math.max(...node.lines.map((l) => textWidth(l, isRoot ? ROOT_FONT : FONT)));
       node.w = Math.ceil(width) + PAD_X * 2 + (isRoot ? 8 : 0);
@@ -126,6 +132,10 @@
       this.nodes = [];
       if (!this.tree) return;
       const root = this.tree;
+      // Màn hình hẹp (điện thoại cầm dọc): dồn mọi nhánh về một phía, nút gốc nằm trên cùng bên trái, các nhánh
+      // xếp dần xuống dưới. Sơ đồ vừa bề ngang màn hình, đọc từ trên xuống và chỉ phải kéo lên xuống.
+      // Chia hai phía thì cả hai bên đều bị cắt.
+      this.oneSided = this._narrow();
       this._size(root);
       root.x = -root.w / 2;
       root.y = -root.h / 2;
@@ -133,9 +143,7 @@
       root.color = '#4f46e5';
       this.nodes.push(root);
       const sides = { 1: [], '-1': [] };
-      // Màn hình hẹp (điện thoại cầm dọc): dồn mọi nhánh về một phía để nhìn là thấy đủ các nhánh chính,
-      // kéo sang phải để đọc ý con. Chia hai phía thì cả hai bên đều bị cắt.
-      this.oneSided = this._narrow();
+      const gap = this.oneSided ? NARROW_LEVEL_GAP : LEVEL_GAP;
       root.children.forEach((child, index) => {
         child.side = this.oneSided || index % 2 === 0 ? 1 : -1;
         child.color = PALETTE[index % PALETTE.length];
@@ -155,10 +163,10 @@
           walk(node);
         };
         kids.forEach(measure);
-        const offsets = { 1: root.w / 2 + LEVEL_GAP };
+        const offsets = { 1: root.w / 2 + gap };
         for (let d = 1; d < 12; d++) {
           if (levelWidth[d] === undefined) break;
-          offsets[d + 1] = offsets[d] + levelWidth[d] + LEVEL_GAP;
+          offsets[d + 1] = offsets[d] + levelWidth[d] + gap;
         }
         let total = kids.reduce((sum, k) => sum + k.sh, 0) + V_GAP * (kids.length - 1);
         let top = -total / 2;
@@ -179,6 +187,8 @@
           place(kid, top, kid.color);
           top += kid.sh + V_GAP;
         }
+        // một phía: nút gốc ngang hàng với nhánh đầu tiên thay vì nằm giữa chiều cao (sơ đồ dài thì giữa nằm ngoài màn hình)
+        if (this.oneSided) root.y = kids[0].y + kids[0].h / 2 - root.h / 2;
       }
     }
 
@@ -281,18 +291,30 @@
       const b = this._bounds();
       const pad = 30;
       if (!rect.width || !rect.height) return; // khung đang ẩn, sẽ fit lại khi hiện
+      if (this.oneSided) {
+        // Điện thoại cầm dọc: thu cho vừa bề ngang (không nhỏ quá mức đọc được), bắt đầu từ nút gốc ở trên cùng;
+        // sơ đồ cao hơn khung thì kéo lên xuống, thấp hơn khung thì đặt giữa
+        const edge = 6;
+        let fitWidth = (rect.width - edge * 2) / b.w;
+        if (!isFinite(fitWidth) || fitWidth <= 0) fitWidth = 1;
+        this.scale = Math.max(0.55, Math.min(fitWidth, 1.15));   // sơ đồ ba cấp luôn vừa; sâu hơn thì kéo ngang
+        this.tx = edge - b.x * this.scale;
+        const height = b.h * this.scale;
+        this.ty = height <= rect.height - edge * 2 ? (rect.height - height) / 2 - b.y * this.scale : edge - b.y * this.scale;
+        this._applyTransform();
+        return;
+      }
       let scale = Math.min((rect.width - pad * 2) / b.w, (rect.height - pad * 2) / b.h, 1.4);
       if (!isFinite(scale) || scale <= 0) scale = 1;
-      // Màn hình hẹp: không thu nhỏ quá mức để chữ còn đọc được, người dùng kéo để xem phần còn lại
-      // (tính theo cửa sổ: trên máy tính khung mind map nằm trong cột hẹp nhưng vẫn phải thấy toàn bộ bản đồ)
-      const minScale = window.innerWidth < 600 ? 0.55 : 0.15;
+      // Máy tính: khung sơ đồ có thể nằm trong một cột hẹp nhưng vẫn phải thấy toàn bộ bản đồ
+      const minScale = 0.15;
       this.scale = Math.max(minScale, scale);
       this.tx = rect.width / 2 - (b.x + b.w / 2) * this.scale;
       this.ty = rect.height / 2 - (b.y + b.h / 2) * this.scale;
       if (this.scale === minScale && scale < minScale) {
-        // bản đồ rộng hơn khung: căn theo nút gốc thay vì căn toàn bộ (một phía thì gốc nằm sát mép trái)
+        // bản đồ quá lớn so với khung: căn theo nút gốc thay vì căn toàn bộ
         const root = this.nodes[0];
-        this.tx = this.oneSided ? 12 - root.x * this.scale : rect.width / 2 - (root.x + root.w / 2) * this.scale;
+        this.tx = rect.width / 2 - (root.x + root.w / 2) * this.scale;
         this.ty = rect.height / 2 - (root.y + root.h / 2) * this.scale;
       }
       this._applyTransform();
