@@ -4,8 +4,9 @@ package vn.mictomindmap.app;
  * Vòng lặp nhận dạng giọng nói liên tục, tách khỏi Android để kiểm thử được trên JVM (xem SpeechLoopTest).
  *
  * SpeechRecognizer của Android chỉ nghe từng đoạn: nó tự dừng sau mỗi câu, khi im lặng, hoặc khi lỗi. Lớp này quyết
- * định sau mỗi lần dừng thì nghe tiếp ngay, chờ rồi thử lại, hay bỏ cuộc và báo lỗi, để với người dùng đó là một
- * lần ghi liên tục. Nó cũng giữ lại phần đang nói dở (kết quả tạm) khi bộ nhận dạng dừng mà chưa kịp chốt.
+ * định sau mỗi lần dừng thì nghe tiếp ngay, chờ rồi thử lại, đổi sang dịch vụ nhận dạng khác của máy, hay bỏ cuộc và
+ * báo lỗi, để với người dùng đó là một lần ghi liên tục. Nó cũng giữ lại phần đang nói dở (kết quả tạm) khi bộ nhận
+ * dạng dừng mà chưa kịp chốt.
  *
  * Mọi hàm phải được gọi trên cùng một luồng (luồng chính của ứng dụng).
  */
@@ -28,6 +29,8 @@ final class SpeechLoop {
     static final long RESTART_DELAY_MS = 120;   // nghỉ giữa hai lần nghe: gọi lại ngay lập tức hay bị báo lỗi CLIENT/BUSY
     static final long RETRY_DELAY_MS = 400;
     static final long STOP_TIMEOUT_MS = 1500;   // chờ kết quả cuối sau khi người dùng bấm dừng
+    static final long READY_TIMEOUT_MS = 8000;  // đã gọi mà bộ nhận dạng không có tín hiệu gì: coi như treo
+    static final int MAX_SILENT_STARTS = 2;
     static final int MAX_NETWORK_FAILURES = 3;
     static final int MAX_AUDIO_FAILURES = 3;
     static final int MAX_OTHER_FAILURES = 6;
@@ -44,6 +47,12 @@ final class SpeechLoop {
 
         /** Bỏ bộ nhận dạng hiện tại; lần nghe sau tạo cái mới (gỡ tình trạng kẹt sau lỗi). */
         void reset();
+
+        /**
+         * Chuyển sang dịch vụ nhận dạng khác của máy (máy có thể có vài dịch vụ: của Google, của hãng...).
+         * Trả về false khi đã thử hết.
+         */
+        boolean nextService();
     }
 
     interface Scheduler {
@@ -74,6 +83,11 @@ final class SpeechLoop {
     private boolean preferOffline;
     private boolean offlineTried;
     private int failures;
+    private int silentStarts;       // số lần liền nhau gọi bộ nhận dạng mà không nhận được tín hiệu nào
+    private int generation;         // tăng mỗi lần gọi bộ nhận dạng, để việc hẹn giờ của lần gọi cũ tự bỏ qua
+    private boolean alive;          // lần nghe hiện tại đã có tín hiệu từ bộ nhận dạng
+    private boolean ready;          // lần nghe hiện tại đã thật sự mở micro (báo sẵn sàng hoặc đã ra chữ)
+    private int quickMisses;        // số lần liền nhau bị báo "không nghe thấy gì" khi còn chưa mở micro
     private String lastPartial = "";
     private Runnable onStopped;
     private boolean reportedListening;
@@ -115,6 +129,8 @@ final class SpeechLoop {
         active = true;
         suspended = false;
         failures = 0;
+        silentStarts = 0;
+        quickMisses = 0;
         preferOffline = false;
         offlineTried = false;
         lastPartial = "";
@@ -179,7 +195,16 @@ final class SpeechLoop {
     // ------------------------------------------------------- tín hiệu từ bộ nhận dạng
     void onReady() {
         if (active && !suspended && listening) {
+            alive = true;
+            ready = true;
             report(true, "");
+        }
+    }
+
+    /** Bộ nhận dạng vừa có động tĩnh (mức âm lượng, bắt đầu/kết thúc lời nói...): nó chưa treo. */
+    void onAlive() {
+        if (listening) {
+            alive = true;
         }
     }
 
@@ -187,12 +212,18 @@ final class SpeechLoop {
         if (!listening) {
             return;   // kết quả về muộn của một lần nghe đã hủy
         }
+        alive = true;
+        ready = true;
         String clean = text == null ? "" : text.trim();
         if (clean.isEmpty() || clean.equals(lastPartial)) {
             return;
         }
         failures = 0;
+        silentStarts = 0;
         lastPartial = clean;
+        if (active && !suspended) {
+            report(true, "");   // có bộ nhận dạng không báo "sẵn sàng" mà trả kết quả luôn
+        }
         events.partial(clean);
     }
 
@@ -202,9 +233,11 @@ final class SpeechLoop {
         }
         listening = false;
         failures = 0;
+        silentStarts = 0;
         String clean = text == null ? "" : text.trim();
-        if (clean.isEmpty()) {
-            clean = lastPartial;   // vài bộ nhận dạng trả kết quả cuối rỗng dù đã có kết quả tạm
+        if (clean.isEmpty() || isTailOf(clean, lastPartial)) {
+            // vài bộ nhận dạng trả kết quả cuối rỗng, hoặc chỉ trả đoạn cuối, dù kết quả tạm đã có cả câu
+            clean = lastPartial;
         }
         lastPartial = "";
         if (!clean.isEmpty()) {
@@ -218,6 +251,8 @@ final class SpeechLoop {
             return;   // lỗi của một lần nghe đã hủy
         }
         listening = false;
+        alive = true;
+        silentStarts = 0;
         flushPartial();
         if (stopping || !active) {
             next(0);
@@ -226,11 +261,20 @@ final class SpeechLoop {
         switch (code) {
             case ERROR_NO_MATCH:
             case ERROR_SPEECH_TIMEOUT:
-                // chỉ là một quãng im lặng: nghe tiếp
-                next(RESTART_DELAY_MS);
+                // chỉ là một quãng im lặng: nghe tiếp, không bao giờ coi là lỗi
+                if (ready) {
+                    quickMisses = 0;
+                    next(RESTART_DELAY_MS);
+                } else {
+                    // báo "không nghe thấy gì" khi còn chưa mở micro: dịch vụ đang trục trặc, giãn nhịp gọi lại để
+                    // không quay vòng dồn dập
+                    quickMisses = Math.min(quickMisses + 1, 5);
+                    next(RETRY_DELAY_MS * quickMisses);
+                }
                 return;
             case ERROR_INSUFFICIENT_PERMISSIONS:
-                fail("permission");
+                // ứng dụng đã có quyền micro mới chạy tới đây: chính dịch vụ nhận dạng chưa được cấp quyền
+                failOrSwitch("service-permission");
                 return;
             case ERROR_LANGUAGE_NOT_SUPPORTED:
             case ERROR_LANGUAGE_UNAVAILABLE:
@@ -239,7 +283,7 @@ final class SpeechLoop {
                     preferOffline = false;
                     next(RETRY_DELAY_MS);
                 } else {
-                    fail("language");
+                    failOrSwitch("language");
                 }
                 return;
             case ERROR_NETWORK:
@@ -278,7 +322,7 @@ final class SpeechLoop {
                 engine.reset();
                 failures++;
                 if (failures >= MAX_OTHER_FAILURES) {
-                    fail("unknown");
+                    failOrSwitch("unknown");
                     return;
                 }
                 next(RETRY_DELAY_MS * failures);
@@ -291,7 +335,64 @@ final class SpeechLoop {
             return;
         }
         listening = true;
+        alive = false;
+        ready = false;
+        final int current = ++generation;
         engine.startListening(language, preferOffline);
+        scheduler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                onReadyTimeout(current);
+            }
+        }, READY_TIMEOUT_MS);
+    }
+
+    /** Đã gọi mà bộ nhận dạng im bặt (dịch vụ treo hoặc không nối được): bỏ lượt đó, tạo lại rồi thử tiếp. */
+    private void onReadyTimeout(int startedGeneration) {
+        if (startedGeneration != generation || !listening || alive || stopping || !active || suspended) {
+            return;
+        }
+        listening = false;
+        engine.cancel();
+        engine.reset();
+        flushPartial();
+        silentStarts++;
+        if (silentStarts >= MAX_SILENT_STARTS) {
+            silentStarts = 0;
+            failOrSwitch("unknown");
+            return;
+        }
+        next(RETRY_DELAY_MS);
+    }
+
+    /** Dịch vụ nhận dạng đang dùng không chạy được: thử dịch vụ khác của máy rồi mới báo lỗi cho người dùng. */
+    private void failOrSwitch(String code) {
+        if (engine.nextService()) {
+            failures = 0;
+            silentStarts = 0;
+            preferOffline = false;
+            offlineTried = false;
+            next(RETRY_DELAY_MS);
+            return;
+        }
+        fail(code);
+    }
+
+    /** tail chỉ là đoạn cuối của whole (so không phân biệt hoa thường, bỏ dấu câu ở cuối)? */
+    static boolean isTailOf(String tail, String whole) {
+        String a = simplify(tail);
+        String b = simplify(whole);
+        return !a.isEmpty() && b.length() > a.length() + 1 && b.endsWith(a)
+            && b.charAt(b.length() - a.length() - 1) == ' ';
+    }
+
+    private static String simplify(String text) {
+        String out = text == null ? "" : text.trim().toLowerCase(java.util.Locale.ROOT).replaceAll("\\s+", " ");
+        int end = out.length();
+        while (end > 0 && ".,!?…".indexOf(out.charAt(end - 1)) >= 0) {
+            end--;
+        }
+        return out.substring(0, end).trim();
     }
 
     private void next(long delayMs) {

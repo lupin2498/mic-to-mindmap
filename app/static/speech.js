@@ -22,6 +22,8 @@
 
   const MESSAGES = {
     permission: 'Chưa được cấp quyền micro hoặc quyền nhận dạng giọng nói. Hãy cấp quyền trong phần cài đặt rồi thử lại.',
+    // Android: ứng dụng đã có quyền nhưng chính dịch vụ nhận dạng của máy (thường là ứng dụng Google) thì chưa
+    'service-permission': 'Dịch vụ nhận dạng giọng nói của máy chưa được cấp quyền micro. Mở Cài đặt → Ứng dụng → Google → Quyền → Micro, chọn cho phép rồi thử lại.',
     network: 'Dịch vụ nhận dạng giọng nói của thiết bị không kết nối được. Kiểm tra mạng (hoặc tải gói nhận dạng ngoại tuyến cho ngôn ngữ này trong cài đặt của máy) rồi thử lại.',
     language: 'Thiết bị chưa hỗ trợ nhận dạng ngôn ngữ đã chọn. Hãy cài gói ngôn ngữ trong cài đặt của máy hoặc đổi ngôn ngữ.',
     audio: 'Không thu được âm thanh từ micro (micro đang bị ứng dụng khác dùng hoặc đã bị ngắt).',

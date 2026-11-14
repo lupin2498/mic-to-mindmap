@@ -17,6 +17,7 @@ public class SpeechLoopTest {
     private final List<Object[]> timers = new ArrayList<>();
     private long now;
     private int stopped;
+    private int spareServices;      // số dịch vụ nhận dạng khác còn có thể chuyển sang
     private SpeechLoop loop;
 
     private final Runnable done = new Runnable() {
@@ -48,6 +49,16 @@ public class SpeechLoopTest {
             @Override
             public void reset() {
                 log.add("reset");
+            }
+
+            @Override
+            public boolean nextService() {
+                if (spareServices <= 0) {
+                    return false;
+                }
+                spareServices--;
+                log.add("nextService");
+                return true;
             }
         }, new SpeechLoop.Scheduler() {
             @Override
@@ -139,6 +150,7 @@ public class SpeechLoopTest {
         for (int i = 0; i < 20; i++) {       // im lặng rất lâu: nghe lại mãi, không bao giờ báo lỗi
             loop.onError(i % 2 == 0 ? SpeechLoop.ERROR_NO_MATCH : SpeechLoop.ERROR_SPEECH_TIMEOUT);
             advance(SpeechLoop.RESTART_DELAY_MS);
+            loop.onReady();
         }
         List<String> quiet = take();
         assertEquals(20, quiet.size());
@@ -247,7 +259,7 @@ public class SpeechLoopTest {
     public void missingPermissionAndUnsupportedLanguageAreFatal() {
         loop.start("vi-VN");
         loop.onError(SpeechLoop.ERROR_INSUFFICIENT_PERMISSIONS);
-        assertEquals(list("listen vi-VN", "reset", "error permission fatal", "state false error"), take());
+        assertEquals(list("listen vi-VN", "reset", "error service-permission fatal", "state false error"), take());
         loop.start("xx-XX");
         loop.onReady();
         loop.onError(SpeechLoop.ERROR_LANGUAGE_NOT_SUPPORTED);
@@ -302,5 +314,151 @@ public class SpeechLoopTest {
         loop.onReady();
         loop.onResults("hello");
         assertEquals(list("state true", "final hello"), take());
+    }
+
+    @Test
+    public void anotherRecognitionServiceIsTriedBeforeGivingUp() {
+        spareServices = 2;
+        loop.start("vi-VN");
+        loop.onError(SpeechLoop.ERROR_LANGUAGE_NOT_SUPPORTED);     // dịch vụ thứ nhất không nhận tiếng Việt
+        assertEquals("đổi dịch vụ, chưa làm phiền người dùng", list("listen vi-VN", "nextService"), take());
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        loop.onError(SpeechLoop.ERROR_INSUFFICIENT_PERMISSIONS);   // dịch vụ thứ hai chưa được cấp quyền micro
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        assertEquals(list("listen vi-VN", "nextService", "listen vi-VN"), take());
+        loop.onReady();
+        loop.onPartial("dịch vụ thứ ba");
+        loop.onResults("dịch vụ thứ ba chạy được");
+        assertEquals(list("state true", "partial dịch vụ thứ ba", "final dịch vụ thứ ba chạy được"), take());
+        assertTrue(loop.isActive());
+        // hết dịch vụ để đổi thì mới báo lỗi
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        take();
+        loop.onError(SpeechLoop.ERROR_LANGUAGE_UNAVAILABLE);
+        assertEquals(list("reset", "error language fatal", "state false error"), take());
+        assertFalse(loop.isActive());
+    }
+
+    @Test
+    public void repeatedClientErrorsSwitchServiceAndStartCountingAgain() {
+        spareServices = 1;
+        loop.start("vi-VN");
+        for (int i = 1; i < SpeechLoop.MAX_OTHER_FAILURES; i++) {
+            loop.onError(SpeechLoop.ERROR_CLIENT);
+            advance(SpeechLoop.RETRY_DELAY_MS * i);
+        }
+        take();
+        loop.onError(SpeechLoop.ERROR_CLIENT);
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        assertEquals(list("reset", "nextService", "listen vi-VN"), take());
+        // dịch vụ mới cũng được thử đủ số lần rồi mới bỏ cuộc
+        for (int i = 1; i < SpeechLoop.MAX_OTHER_FAILURES; i++) {
+            loop.onError(SpeechLoop.ERROR_CLIENT);
+            advance(SpeechLoop.RETRY_DELAY_MS * i);
+            assertTrue("lần " + i, loop.isActive());
+        }
+        take();
+        loop.onError(SpeechLoop.ERROR_CLIENT);
+        assertEquals(list("reset", "reset", "error unknown fatal", "state false error"), take());
+    }
+
+    @Test
+    public void recognizerThatNeverAnswersIsRecreatedThenReported() {
+        loop.start("vi-VN");
+        take();
+        advance(SpeechLoop.READY_TIMEOUT_MS - 1);
+        assertEquals("chưa hết hạn chờ", list(), take());
+        advance(1);
+        assertEquals(list("cancel", "reset"), take());
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        assertEquals(list("listen vi-VN"), take());
+        advance(SpeechLoop.READY_TIMEOUT_MS);
+        assertEquals(list("cancel", "reset", "reset", "error unknown fatal", "state false error"), take());
+        assertFalse(loop.isActive());
+        advance(60_000);
+        assertEquals(list(), take());
+    }
+
+    @Test
+    public void silentRecognizerSwitchesServiceWhenThereIsOne() {
+        spareServices = 1;
+        loop.start("vi-VN");
+        advance(SpeechLoop.READY_TIMEOUT_MS);
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        advance(SpeechLoop.READY_TIMEOUT_MS);
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        assertEquals(list("listen vi-VN", "cancel", "reset", "listen vi-VN", "cancel", "reset", "nextService", "listen vi-VN"), take());
+        loop.onReady();
+        assertEquals(list("state true"), take());
+    }
+
+    @Test
+    public void anySignOfLifeKeepsTheWatchdogAway() {
+        loop.start("vi-VN");
+        take();
+        advance(SpeechLoop.READY_TIMEOUT_MS / 2);
+        loop.onAlive();                       // mới chỉ có mức âm lượng, chưa có chữ nào
+        advance(10 * 60_000);
+        assertEquals("người nói im lặng rất lâu: không được tự hủy lượt nghe", list(), take());
+        loop.onPartial("giờ mới nói");
+        assertEquals("không có tín hiệu sẵn sàng thì kết quả đầu tiên báo đang nghe", list("state true", "partial giờ mới nói"), take());
+        // lượt nghe sau có hẹn giờ riêng; hẹn giờ của lượt trước không được hủy nhầm lượt này
+        loop.onResults("giờ mới nói xong");
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        loop.onReady();
+        take();
+        advance(10 * 60_000);
+        assertEquals(list(), take());
+        assertTrue(loop.isActive());
+    }
+
+    @Test
+    public void finalResultThatIsOnlyTheTailKeepsTheWholeSentence() {
+        loop.start("vi-VN");
+        loop.onReady();
+        loop.onPartial("hôm nay chúng ta họp về kế hoạch quý bốn");
+        loop.onResults("Kế hoạch quý bốn.");                        // chỉ trả đoạn cuối
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        loop.onPartial("doanh thu tăng");
+        loop.onResults("Doanh thu tăng 15%");                       // kết quả chốt đầy đủ hơn: dùng nó
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        loop.onPartial("sách");
+        loop.onResults("ngân sách");                                // không phải đoạn cuối của phần tạm
+        List<String> finals = new ArrayList<>();
+        for (String line : take()) {
+            if (line.startsWith("final ")) {
+                finals.add(line);
+            }
+        }
+        assertEquals(list("final hôm nay chúng ta họp về kế hoạch quý bốn", "final Doanh thu tăng 15%", "final ngân sách"), finals);
+        assertTrue(SpeechLoop.isTailOf("quý bốn", "kế hoạch quý bốn"));
+        assertFalse("phải khớp trọn từ", SpeechLoop.isTailOf("ốn", "kế hoạch quý bốn"));
+        assertFalse(SpeechLoop.isTailOf("kế hoạch quý bốn", "kế hoạch quý bốn"));
+        assertFalse(SpeechLoop.isTailOf("", "kế hoạch"));
+        assertFalse(SpeechLoop.isTailOf("kế hoạch", ""));
+    }
+
+    @Test
+    public void noMatchBeforeTheMicOpensBacksOffButNeverBecomesAnError() {
+        loop.start("vi-VN");
+        take();
+        loop.onError(SpeechLoop.ERROR_NO_MATCH);          // dịch vụ trả lời ngay, chưa hề báo sẵn sàng
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        assertEquals("không gọi lại dồn dập", list(), take());
+        advance(SpeechLoop.RETRY_DELAY_MS);
+        assertEquals(list("listen vi-VN"), take());
+        for (int i = 0; i < 50; i++) {
+            loop.onError(SpeechLoop.ERROR_NO_MATCH);
+            advance(SpeechLoop.RETRY_DELAY_MS * 5);
+        }
+        List<String> calls = take();
+        assertEquals(50, calls.size());
+        assertFalse(calls.toString(), calls.toString().contains("error"));
+        assertTrue(loop.isActive());
+        // dịch vụ chạy lại bình thường thì nhịp nghe cũng trở lại bình thường
+        loop.onReady();
+        loop.onError(SpeechLoop.ERROR_SPEECH_TIMEOUT);
+        advance(SpeechLoop.RESTART_DELAY_MS);
+        assertEquals(list("state true", "listen vi-VN"), take());
     }
 }

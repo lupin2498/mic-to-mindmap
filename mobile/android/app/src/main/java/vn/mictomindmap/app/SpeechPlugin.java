@@ -2,14 +2,17 @@ package vn.mictomindmap.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.ResolveInfo;
 import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
@@ -25,6 +28,7 @@ import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
 import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Plugin "M2MSpeech": chuyển lời nói thành văn bản ngay khi nói bằng bộ nhận dạng giọng nói có sẵn của Android
@@ -36,6 +40,10 @@ import java.util.ArrayList;
  *
  * WebView của Android không có Web Speech API, và micro không dùng chung được giữa trang web với bộ nhận dạng, nên
  * khi plugin này chạy thì trang web không tự mở micro nữa.
+ *
+ * Một máy có thể có vài dịch vụ nhận dạng (của ứng dụng Google, của hãng máy, bản chạy trên thiết bị...) và dịch vụ
+ * mặc định không phải lúc nào cũng nhận được tiếng Việt. Plugin thử dịch vụ của ứng dụng Google trước, rồi dịch vụ mặc
+ * định, rồi các dịch vụ còn lại; SpeechLoop quyết định khi nào đổi.
  */
 @CapacitorPlugin(
     name = "M2MSpeech",
@@ -46,12 +54,17 @@ public class SpeechPlugin extends Plugin {
     static final String MICROPHONE = "microphone";
     private static final String PREFS = "m2m_speech";
     private static final String KEY_MUTED = "muted_music_stream";
+    private static final String RECOGNITION_SERVICE = "android.speech.RecognitionService";
+    private static final String GOOGLE_APP = "com.google.android.googlequicksearchbox";
     private static final long LEVEL_INTERVAL_MS = 100;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Object timerToken = new Object();
     private SpeechRecognizer recognizer;
     private SpeechLoop loop;
+    private List<ComponentName> services = new ArrayList<>();   // phần tử null: để Android tự chọn dịch vụ mặc định
+    private int serviceIndex;
+    private int provenIndex = -1;                               // dịch vụ gần nhất đã thật sự trả về văn bản
     private boolean mutedByUs;
     private boolean keepAwakeRequested;
     private long lastLevelAt;
@@ -100,6 +113,7 @@ public class SpeechPlugin extends Plugin {
         handler.post(new Runnable() {
             @Override
             public void run() {
+                prepareServices();
                 muteBeep(true);
                 loop.start(language);
                 applyKeepAwake();
@@ -229,6 +243,65 @@ public class SpeechPlugin extends Plugin {
         }
     }
 
+    /**
+     * Lập thứ tự thử các dịch vụ nhận dạng của máy. Dịch vụ của ứng dụng Google đứng đầu vì nhận tiếng Việt và nghe
+     * được đoạn dài; dịch vụ mặc định của vài hãng máy không nhận tiếng Việt hoặc cần cài đặt riêng mới chạy.
+     */
+    private void prepareServices() {
+        ComponentName google = null;
+        List<ComponentName> others = new ArrayList<>();
+        try {
+            List<ResolveInfo> found = getContext().getPackageManager().queryIntentServices(new Intent(RECOGNITION_SERVICE), 0);
+            for (ResolveInfo info : found) {
+                if (info == null || info.serviceInfo == null) {
+                    continue;
+                }
+                ComponentName name = new ComponentName(info.serviceInfo.packageName, info.serviceInfo.name);
+                if (GOOGLE_APP.equals(info.serviceInfo.packageName)) {
+                    if (google == null) {
+                        google = name;
+                    }
+                } else {
+                    others.add(name);
+                }
+            }
+        } catch (Exception ignored) {
+            // không liệt kê được: chỉ dùng dịch vụ mặc định
+        }
+        ComponentName system = defaultService();
+        List<ComponentName> order = new ArrayList<>();
+        if (google != null) {
+            order.add(google);
+        }
+        if (google == null || !google.equals(system)) {
+            order.add(null);
+        }
+        for (ComponentName name : others) {
+            if (!name.equals(system)) {
+                order.add(name);
+            }
+        }
+        if (!order.equals(services)) {
+            services = order;
+            provenIndex = -1;
+        }
+        int wanted = provenIndex >= 0 && provenIndex < services.size() ? provenIndex : 0;
+        if (wanted != serviceIndex) {
+            serviceIndex = wanted;
+            destroyRecognizer();
+        }
+    }
+
+    /** Dịch vụ nhận dạng mặc định mà người dùng chọn trong cài đặt của máy (null nếu không đọc được). */
+    private ComponentName defaultService() {
+        try {
+            String flat = Settings.Secure.getString(getContext().getContentResolver(), "voice_recognition_service");
+            return flat == null || flat.isEmpty() ? null : ComponentName.unflattenFromString(flat);
+        } catch (Exception ex) {
+            return null;
+        }
+    }
+
     private void destroyRecognizer() {
         if (recognizer != null) {
             try {
@@ -261,7 +334,10 @@ public class SpeechPlugin extends Plugin {
         public void startListening(String language, boolean preferOffline) {
             try {
                 if (recognizer == null) {
-                    recognizer = SpeechRecognizer.createSpeechRecognizer(getContext());
+                    ComponentName service = serviceIndex < services.size() ? services.get(serviceIndex) : null;
+                    recognizer = service == null
+                        ? SpeechRecognizer.createSpeechRecognizer(getContext())
+                        : SpeechRecognizer.createSpeechRecognizer(getContext(), service);
                     recognizer.setRecognitionListener(this);
                 }
                 Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
@@ -316,15 +392,28 @@ public class SpeechPlugin extends Plugin {
         }
 
         @Override
+        public boolean nextService() {
+            if (serviceIndex + 1 >= services.size()) {
+                return false;
+            }
+            serviceIndex++;
+            destroyRecognizer();
+            return true;
+        }
+
+        @Override
         public void onReadyForSpeech(Bundle params) {
             loop.onReady();
         }
 
         @Override
-        public void onBeginningOfSpeech() {}
+        public void onBeginningOfSpeech() {
+            loop.onAlive();
+        }
 
         @Override
         public void onRmsChanged(float rmsdB) {
+            loop.onAlive();
             long now = SystemClock.uptimeMillis();
             if (now - lastLevelAt < LEVEL_INTERVAL_MS) {
                 return;
@@ -341,7 +430,9 @@ public class SpeechPlugin extends Plugin {
         public void onBufferReceived(byte[] buffer) {}
 
         @Override
-        public void onEndOfSpeech() {}
+        public void onEndOfSpeech() {
+            loop.onAlive();
+        }
 
         @Override
         public void onError(int error) {
@@ -350,12 +441,20 @@ public class SpeechPlugin extends Plugin {
 
         @Override
         public void onResults(Bundle results) {
-            loop.onResults(bestText(results));
+            String text = bestText(results);
+            if (!text.trim().isEmpty()) {
+                provenIndex = serviceIndex;
+            }
+            loop.onResults(text);
         }
 
         @Override
         public void onPartialResults(Bundle partialResults) {
-            loop.onPartial(bestText(partialResults));
+            String text = bestText(partialResults);
+            if (!text.trim().isEmpty()) {
+                provenIndex = serviceIndex;
+            }
+            loop.onPartial(text);
         }
 
         @Override
