@@ -18,6 +18,7 @@ Android/iOS). Thời lượng khoảng một giờ.
 - So bộ máy Python với JavaScript thêm 10 hạt giống ngẫu nhiên (khoảng 50.000 ca, ngoài 5.000 ca của bộ test): khớp hết, trước và sau khi sửa.
 - Chạy bộ máy trên văn bản nhận dạng giọng nói tự viết (một mạch không dấu câu, nhiều mốc thời gian).
 - Nghi ngờ khẳng định lỏng: đo cỡ chữ thật của sơ đồ trên màn 390px, đo phần tử tràn ngang theo `clientWidth`.
+- Một lần đỏ trên CI (run Tests 43606341271, bước `chu-dai`): phông của máy CI rộng hơn nên lộ thêm hai nút không xuống dòng sau khi sửa lưới. Đã sửa và thêm khẳng định giãn chữ 1px để bắt được ngay tại chỗ, không phụ thuộc phông của máy chạy test.
 - Mỗi lỗi có test đỏ trước khi sửa. Bước E2E khẳng định ba lỗi thì chạy lại với từng bản sửa một phần để chắc từng khẳng định bắt được lỗi của nó.
 
 ## 2. Kết quả
@@ -25,7 +26,7 @@ Android/iOS). Thời lượng khoảng một giờ.
 | Bộ test | Trước | Sau |
 |---|---|---|
 | pytest | 120 đạt | 122 đạt / 122 |
-| E2E Playwright | 34 bước đạt | 37 bước đạt / 37 |
+| E2E Playwright | 34 bước đạt | 38 bước đạt / 38 |
 | JVM (Android, chạy tại chỗ bằng JUnit; CI chạy `gradlew testDebugUnitTest`) | 41 đạt | 42 đạt / 42 |
 
 ## 3. Lỗi đã sửa
@@ -37,19 +38,19 @@ Android/iOS). Thời lượng khoảng một giờ.
 | 3 | Cao | Đóng hoặc tải lại trang giữa lúc chuyển file: không hỏi, mất hết phần đã nhận dạng | Hộp hỏi `beforeunload` không tính việc chuyển file | `app/static/app.js` | `cf7c4a3` | E2E `doc-lap-nhap-file-roi-di` |
 | 4 | Trung bình | Trình duyệt nhận dạng file: dịch vụ tự tắt hai lần liền (mạng chập chờn) thì file vẫn phát lúc chưa có bộ nhận dạng nào nghe, đoạn đó mất khỏi văn bản | Hẹn giờ "phát phòng khi không có onstart" không gắn với bộ nhận dạng đã đặt nó | `app/static/speech.js` | `45c6f8d` | E2E `nhap-file-ngat` |
 | 5 | Trung bình | Văn bản nói một mạch: "trước thứ năm tuần sau", "hạn là cuối tuần này" bị cắt đôi, việc cần làm mất hạn chót; việc có hạn "hôm nay" (từ "hôm nay mình họp") thay vì "trước thứ năm tuần sau" | Cắt bắt buộc ở từ thứ 28 không tránh cụm thời hạn; lấy mốc thời gian đầu tiên trong câu | `app/textutil.py`, `app/heuristic.py`, `app/static/engine.js` | `62d4b6f` | `test_engine.py::test_run_on_speech_keeps_deadlines_whole_and_prefers_real_deadlines`, `::test_due_prefers_a_marked_deadline_over_a_narrative_time`, mẫu `vi_speech_run_on` trong bộ so Python/JavaScript |
-| 6 | Trung bình | Trên điện thoại 390px (web và app) trang kết quả rộng 399px: kéo ngang được, trình duyệt thu nhỏ cả trang | Cột lưới `1fr` của `.layout` không co nhỏ hơn bề rộng tối thiểu của nội dung | `app/static/style.css` | mục 6 | E2E `dien-thoai`, `doc-lap-ghi-am` (khẳng định tràn ngang đã siết) |
-| 7 | Trung bình | Phóng to sơ đồ để đọc rồi cuộn trang (thanh địa chỉ ẩn) hoặc sửa chữ một nút (bàn phím ảo mở): sơ đồ nhảy về mức vừa khung, ô sửa lệch khỏi nút | Mọi sự kiện resize đều vẽ lại và fit, kể cả khi chỉ chiều cao đổi | `app/static/mindmap.js` | mục 6 | E2E `mindmap-doi-cao` |
+| 6 | Trung bình | Trên điện thoại 390px (web và app) trang kết quả rộng 399px: kéo ngang được, trình duyệt thu nhỏ cả trang; máy có phông rộng hơn thì hai nút "💾 Lưu ..." chữ dài đẩy thẻ tràn ra ngoài | Cột lưới `1fr` của `.layout` không co nhỏ hơn bề rộng tối thiểu của nội dung; nút `.btn` không bao giờ xuống dòng | `app/static/style.css` | `63eb82a`, `b6802e4` | E2E `dien-thoai`, `doc-lap-ghi-am` (khẳng định tràn ngang đã siết), `chu-dai` (thêm kiểm khi giãn chữ 1px) |
+| 7 | Trung bình | Phóng to sơ đồ để đọc rồi cuộn trang (thanh địa chỉ ẩn) hoặc sửa chữ một nút (bàn phím ảo mở): sơ đồ nhảy về mức vừa khung, ô sửa lệch khỏi nút | Mọi sự kiện resize đều vẽ lại và fit, kể cả khi chỉ chiều cao đổi | `app/static/mindmap.js` | `63eb82a` | E2E `mindmap-doi-cao` |
 | 8 | Thấp | Android: chuyển file gửi vài chục sự kiện tiến trình mỗi giây qua cầu nối, mỗi lần giao diện đếm lại toàn bộ số từ (file 1 giờ: 28.126 sự kiện) | Báo tiến trình cho mỗi khối 4096 byte | `FileSession.java` | `d2cc53d` | `FileSessionTest.progressIsReportedInSmallStepsNotOncePerPipeChunk` |
 | 9 | Thấp | Android: mỗi lần mở dịch vụ nhận dạng thất bại rò một file descriptor | Đầu ghi của đường ống chỉ được đóng khi đã giao cho luồng bơm | `FileRecognizer.java` | `d2cc53d` | chỉ biên dịch được (không có máy ảo) |
-| 10 | Hạ tầng test | Khẳng định "không tràn ngang" đạt cả khi trang tràn 9px | So `scrollWidth` với `innerWidth`, mà trên điện thoại innerWidth rộng ra theo nội dung | `tests/e2e/run.js` | mục 6 | đỏ ở `dien-thoai`, `doc-lap-ghi-am` với CSS cũ |
+| 10 | Trung bình | Chế độ độc lập (app điện thoại): xóa một cuộc họp đúng lúc nó đang được lưu âm thanh hay đang tóm tắt thì cuộc họp sống lại (mất file âm thanh) | `local.js` đọc cuộc họp, làm việc rồi ghi đè cả bản ghi, không kiểm nó còn hay không (máy chủ thì có kiểm) | `app/static/local.js` | `fdb4d7e` | E2E `doc-lap-xoa-khi-dang-luu` |
+| 11 | Hạ tầng test | Khẳng định "không tràn ngang" đạt cả khi trang tràn 9px | So `scrollWidth` với `innerWidth`, mà trên điện thoại innerWidth rộng ra theo nội dung | `tests/e2e/run.js` | `63eb82a` | đỏ ở `dien-thoai`, `doc-lap-ghi-am` với CSS cũ |
 
 ## 4. Lỗi còn lại và hạn chế đã biết
 
 1. **Chữ của sơ đồ trên màn 390px cao 8,3px** (cỡ 13 nhân tỉ lệ 0,64 để ba cấp vừa bề ngang), dưới mức 11-12px thường khuyên dùng trên điện thoại. Đây là đánh đổi thiết kế (vừa bề ngang, không kéo ngang) nên không đổi trong đợt này; cách làm lớn hơn: tăng cỡ chữ ở bố cục hẹp (nút nhiều dòng hơn) hoặc cho kéo ngang. Người dùng phóng to được và nay mức phóng to không còn bị mất khi cuộn.
 2. Bộ máy không cần AI: "bình ơi em phụ trách ..." chưa nhận ra Bình là người phụ trách; đầu việc còn đuôi "nhé hạn là" sau khi tách hạn chót ra cột riêng; câu nói một mạch vẫn có thể gộp hai việc vào một câu (việc của Hà trong mẫu `vi_speech_run_on` thành quyết định vì cùng câu với "chốt lại").
-3. Chế độ độc lập (`local.js`): đọc, sửa, ghi một cuộc họp không trong một giao dịch IndexedDB; xóa cuộc họp đúng lúc đang lưu file âm thanh lớn có thể làm nó sống lại (khoảng trống hẹp, chưa tái hiện qua giao diện).
-4. Chọn file trong mấy mili giây đầu, trước khi plugin trả lời `fileSupport`, sẽ bị báo "máy chưa hỗ trợ".
-5. Bản máy chủ: tải âm thanh lên lỗi mà vẫn có văn bản thì nguồn văn bản ghi là `device` dù nhận dạng bằng trình duyệt (chỉ sai nhãn).
+3. Chọn file trong mấy mili giây đầu, trước khi plugin trả lời `fileSupport`, sẽ bị báo "máy chưa hỗ trợ".
+4. Bản máy chủ: tải âm thanh lên lỗi mà vẫn có văn bản thì nguồn văn bản ghi là `device` dù nhận dạng bằng trình duyệt (chỉ sai nhãn).
 
 ## 5. Chưa kiểm được ở môi trường này
 
@@ -62,7 +63,7 @@ Android/iOS). Thời lượng khoảng một giờ.
 
 ## 6. Commit
 
-`cf7c4a3`, `45c6f8d`, `d2cc53d`, `62d4b6f`, rồi commit "Điện thoại: trang kết quả không còn rộng hơn màn hình..." (lỗi 6, 7, 10) và commit sổ tay kèm báo cáo này. Lỗi 6, 7, 10 nằm trong commit đó.
+`cf7c4a3` (lỗi 1-3), `45c6f8d` (lỗi 4), `d2cc53d` (lỗi 8, 9), `62d4b6f` (lỗi 5), `63eb82a` (lỗi 6, 7, 11), `34e9130` (sổ tay, báo cáo lần đầu), `fdb4d7e` (lỗi 10), `b6802e4` (phần còn lại của lỗi 6, sau lần đỏ trên CI), rồi commit sổ tay kèm báo cáo này.
 
 # Đợt 13/11/2026
 
