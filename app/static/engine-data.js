@@ -326,7 +326,13 @@
       "then", "also", "because", "however", "tôi", "tao", "tớ", "mình", "ta", "chúng", "họ", "nó", "ai", "mọi",
       "đây", "đó", "này", "việc", "i", "we", "you", "they", "he", "she", "it", "who", "everyone", "someone", "this",
       "that", "there", "the", "cần", "phải", "sẽ", "hãy", "need", "needs", "remember", "please", "try", "want",
-      "wants", "going", "let", "lets", "have", "has"
+      "wants", "going", "let", "lets", "have", "has", "vậy", "thế", "giờ", "mai", "nay", "lát", "chắc", "có", "đang",
+      "không", "chưa", "đã", "cũng", "vẫn", "chỉ", "bây", "hôm", "tuần", "tháng", "năm", "ngày", "sáng", "chiều",
+      "tối", "khi", "lúc", "trước", "trong", "về", "với", "cho", "để", "do", "bởi", "tại", "theo", "như", "là", "mà",
+      "hay", "hoặc", "vừa", "mới", "sắp", "đều", "luôn", "thường", "cứ", "đừng", "xin", "mời", "dạ", "vâng", "ừ",
+      "à", "ờ", "ok", "okay", "now", "today", "tomorrow", "maybe", "just", "still", "here", "what", "when", "where",
+      "why", "how", "if", "which", "these", "those", "all", "some", "any", "each", "both", "nobody", "anyone",
+      "somebody", "our", "my", "your"
     ],
     "not_names_after_honorific": [
       "nghĩ", "thấy", "muốn", "định", "cũng", "vẫn", "đang", "đã", "có", "là", "không", "chưa", "cần", "phải", "nên",

@@ -42,7 +42,8 @@ def test_full_flow_with_browser_transcript(client):
     assert audio.status_code == 200 and audio.content.startswith(b"\x1aE\xdf\xa3")
 
     markdown = client.get(f"/api/meetings/{meeting['id']}/export.md").text
-    assert markdown.startswith("# Họp kế hoạch") and "## Mind map" in markdown and "## Việc cần làm" in markdown
+    assert markdown.startswith("# Họp kế hoạch") and "## Sơ đồ tư duy" in markdown and "## Việc cần làm" in markdown
+    assert "## Văn bản" in markdown and markdown.endswith(meeting["transcript"] + "\n")
 
 
 def test_manual_transcript_flow_and_learning_cycle(client):
