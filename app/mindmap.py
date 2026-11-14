@@ -94,6 +94,29 @@ def to_markdown(tree: dict | None) -> str:
     return "\n".join(lines)
 
 
+def meeting_markdown(meeting: dict) -> str:
+    """Biên bản Markdown của một cuộc họp (bản JavaScript tương ứng: meetingMarkdown trong app/static/engine.js)."""
+    analysis = meeting.get("analysis") or {}
+    lines = [f"# {meeting['title']}", "", f"- Thời gian: {meeting['created_at']}"]
+    if meeting.get("participants"):
+        lines.append(f"- Người tham gia: {', '.join(meeting['participants'])}")
+    lines += ["", "## Ý chính"] + [f"- {s}" for s in analysis.get("summary") or []]
+    if analysis.get("decisions"):
+        lines += ["", "## Quyết định"] + [f"- {d}" for d in analysis["decisions"]]
+    if analysis.get("action_items"):
+        lines += ["", "## Việc cần làm"]
+        for item in analysis["action_items"]:
+            meta = ", ".join(x for x in (item.get("owner"), item.get("due")) if x)
+            lines.append(f"- [ ] {item.get('task')}" + (f" ({meta})" if meta else ""))
+    if analysis.get("keywords"):
+        lines += ["", "## Từ khóa", ", ".join(analysis["keywords"])]
+    if analysis.get("mindmap"):
+        lines += ["", "## Sơ đồ tư duy", "", to_markdown(analysis["mindmap"])]
+    if meeting.get("transcript"):
+        lines += ["", "## Văn bản", "", meeting["transcript"]]
+    return "\n".join(lines) + "\n"
+
+
 def count_nodes(tree: dict | None) -> int:
     if not tree:
         return 0

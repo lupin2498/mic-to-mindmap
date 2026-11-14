@@ -20,7 +20,7 @@ from .config import Settings, load_settings
 from .db import Database
 from .learning import AutoEmbedder, FeedbackLearner, Glossary, MemoryStore
 from .llm import OllamaClient
-from .mindmap import USER_MAX_CHILDREN, USER_MAX_DEPTH, normalize_mindmap, to_markdown
+from .mindmap import USER_MAX_CHILDREN, USER_MAX_DEPTH, meeting_markdown, normalize_mindmap
 from .pipeline import Pipeline
 from .summarizer import Analyzer, _as_action_items, _as_str_list
 from .textutil import nfc, scrub_json
@@ -316,25 +316,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/meetings/{meeting_id}/export.md")
     def export_markdown(meeting_id: str) -> PlainTextResponse:
         meeting = get_meeting_or_404(meeting_id)
-        analysis = meeting.get("analysis") or {}
-        lines = [f"# {meeting['title']}", "", f"- Thời gian: {meeting['created_at']}"]
-        if meeting.get("participants"):
-            lines.append(f"- Người tham gia: {', '.join(meeting['participants'])}")
-        lines += ["", "## Ý chính"] + [f"- {s}" for s in analysis.get("summary", [])]
-        if analysis.get("decisions"):
-            lines += ["", "## Quyết định"] + [f"- {d}" for d in analysis["decisions"]]
-        if analysis.get("action_items"):
-            lines += ["", "## Việc cần làm"]
-            for item in analysis["action_items"]:
-                meta = ", ".join(x for x in (item.get("owner"), item.get("due")) if x)
-                lines.append(f"- [ ] {item.get('task')}" + (f" ({meta})" if meta else ""))
-        if analysis.get("keywords"):
-            lines += ["", "## Từ khóa", ", ".join(analysis["keywords"])]
-        if analysis.get("mindmap"):
-            lines += ["", "## Mind map", "", to_markdown(analysis["mindmap"])]
-        if meeting.get("transcript"):
-            lines += ["", "## Transcript", "", meeting["transcript"]]
-        return PlainTextResponse("\n".join(lines) + "\n", media_type="text/markdown; charset=utf-8")
+        return PlainTextResponse(meeting_markdown(meeting), media_type="text/markdown; charset=utf-8")
 
     # ----------------------------------------------------------- learning
     @app.get("/api/learning/stats")
