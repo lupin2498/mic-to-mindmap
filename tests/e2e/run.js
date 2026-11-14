@@ -1486,6 +1486,39 @@ step('doc-lap-nhap-file-roi-di: đang chuyển file mà mở cuộc họp khác,
   eq(asked, 1, 'số lần bị hỏi');
 });
 
+step('doc-lap-xoa-khi-dang-luu: xóa cuộc họp đúng lúc đang lưu âm thanh, đang tóm tắt hay đang lưu văn bản thì cuộc họp không sống lại', async (ctx) => {
+  const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
+  const out = await page.evaluate(async () => {
+    const L = window.M2MLocal;
+    const titles = async () => (await L.request('GET', '/api/meetings')).map((x) => x.title);
+    const settle = (p) => p.then(() => 'ok', (e) => e.status || e.message);
+    const res = {};
+    const a = await L.request('POST', '/api/meetings', { title: 'Xóa khi đang lưu âm thanh' });
+    const form = new FormData();
+    form.append('audio', new Blob([new Uint8Array(3 * 1024 * 1024)], { type: 'audio/mp4' }), 'a.m4a');
+    form.append('live_transcript', 'hôm nay chúng ta họp về kế hoạch quý bốn và ngân sách quảng cáo');
+    form.append('transcript_source', 'file');
+    const upload = settle(L.request('POST', `/api/meetings/${a.id}/audio`, form, true));
+    await L.request('DELETE', `/api/meetings/${a.id}`);
+    res.upload = await upload;
+    res.audioUrl = await L.audioUrl(a.id);
+    const b = await L.request('POST', '/api/meetings', { title: 'Xóa khi đang tóm tắt' });
+    await L.request('PUT', `/api/meetings/${b.id}/transcript`, { transcript: 'hôm nay chúng ta họp về kế hoạch quý bốn. an sẽ gửi báo cáo trước thứ sáu.' });
+    const proc = settle(L.request('POST', `/api/meetings/${b.id}/process`));
+    await L.request('DELETE', `/api/meetings/${b.id}`);
+    res.process = await proc;
+    const c = await L.request('POST', '/api/meetings', { title: 'Xóa khi đang lưu văn bản' });
+    const put = settle(L.request('PUT', `/api/meetings/${c.id}/transcript`, { transcript: 'văn bản mới' }));
+    await L.request('DELETE', `/api/meetings/${c.id}`);
+    res.put = await put;
+    res.titles = await titles();
+    return res;
+  });
+  eq(out.titles, [], 'cuộc họp đã xóa không sống lại');
+  eq(out.audioUrl, '', 'không còn file âm thanh mồ côi của cuộc họp đã xóa');
+  for (const key of ['upload', 'process', 'put']) assert(out[key] === 'ok' || out[key] === 404, `${key}: xong trước khi xóa hoặc báo 404 (${out[key]})`);
+});
+
 step('di-dong-www: máy chủ AI là tùy chọn, nhập địa chỉ thì chạy chéo origin, bỏ đi thì về độc lập', async (ctx) => {
   const page = ctx.page = await open(WWW + '/', PHONE, { speech: 'native' });
   await analyzeText(page, 'Ghi chú trên máy');

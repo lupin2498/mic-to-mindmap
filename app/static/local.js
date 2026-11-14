@@ -55,6 +55,11 @@
         return Promise.resolve(value[field]);
       },
       del: (store, key) => { tables[store].delete(key); return Promise.resolve(); },
+      replace(store, value) {
+        if (!tables[store].has(value.id)) return Promise.resolve(false);
+        tables[store].set(value.id, value);
+        return Promise.resolve(true);
+      },
     };
   }
   function idbStore() {
@@ -106,6 +111,19 @@
         return key;
       }),
       del: (store, key) => run(store, 'readwrite', (s) => s.delete(key)),
+      // ghi đè một bản ghi chỉ khi nó còn đó, kiểm và ghi trong cùng một giao dịch; trả về false nếu nó đã bị xóa
+      replace: (store, value) => open().then((db) => new Promise((resolve, reject) => {
+        let found = false;
+        const tx = db.transaction(store, 'readwrite');
+        tx.oncomplete = () => resolve(found);
+        tx.onerror = () => reject(tx.error || new Error('Lỗi kho dữ liệu'));
+        tx.onabort = () => reject(tx.error || new Error('Không ghi được (có thể máy đã hết dung lượng)'));
+        const objects = tx.objectStore(store);
+        const probe = objects.count(value.id);
+        probe.onsuccess = () => {
+          if (probe.result > 0) { found = true; objects.put(value); }
+        };
+      })),
     };
   }
   let store = null;
@@ -135,6 +153,7 @@
   const all = (name) => io((s) => s.all(name));
   const put = (name, value, keyField) => io((s) => s.put(name, value, keyField));
   const del = (name, key) => io((s) => s.del(name, key));
+  const replace = (name, value) => io((s) => s.replace(name, value));
 
   async function getPref(key, fallback) {
     const row = await get('prefs', key);
@@ -176,9 +195,11 @@
     if (!m) throw apiError(404, 'Không tìm thấy cuộc họp');
     return m;
   }
-  function saveMeeting(m) {
+  /* Ghi lại một cuộc họp đã có. Cuộc họp bị xóa trong lúc đang lưu âm thanh, đang tóm tắt hay đang sửa thì báo 404 như
+     máy chủ, không ghi lại (ghi lại là cuộc họp đã xóa sống lại). */
+  async function saveMeeting(m) {
     m.updated_at = nowIso();
-    return put('meetings', m);
+    if (!(await replace('meetings', m))) throw apiError(404, 'Không tìm thấy cuộc họp');
   }
   function cleanList(value) {
     return (Array.isArray(value) ? value : []).filter((p) => typeof p === 'string').map((p) => engine.nfc(p).trim()).filter(Boolean);
@@ -242,7 +263,12 @@
       m.transcript = engine.nfc(live).trim();
       m.transcript_source = TEXT_SOURCES.indexOf(source) >= 0 ? source : 'device';
     }
-    await saveMeeting(m);
+    try {
+      await saveMeeting(m);
+    } catch (err) {
+      if (err.status === 404) await del('audio', id);   // bị xóa trong lúc đang lưu: không để lại file âm thanh mồ côi
+      throw err;
+    }
     return publicMeeting(m, true);
   }
   async function audioUrl(id) {
@@ -518,6 +544,7 @@
       await saveMeeting(m);
       await logEvent('memory', `Đã tóm tắt và vẽ sơ đồ tư duy cho '${m.title}' (không cần AI)`, id);
     } catch (err) {
+      if (err && err.status === 404) throw err;   // bị xóa trong lúc đang tóm tắt
       m.status = 'error';
       m.error = String((err && err.message) || err);
       await saveMeeting(m);
